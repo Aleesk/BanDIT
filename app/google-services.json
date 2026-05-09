@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "943816176697",
+    "project_id": "bandit-dc6fd",
+    "storage_bucket": "bandit-dc6fd.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:943816176697:android:17151423f0ce2cb54b49e8",
+        "android_client_info": {
+          "package_name": "me.aleesk.bandit"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCBfAUsl30D_I55Y34_fRU6m-YA-V95pAQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
