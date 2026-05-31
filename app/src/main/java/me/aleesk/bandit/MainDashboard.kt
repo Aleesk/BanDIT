@@ -1,5 +1,6 @@
 package me.aleesk.bandit
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.messaging.FirebaseMessaging
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -22,8 +24,8 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
 
     var userName by remember { mutableStateOf("Cargando...") }
     var userRole by remember { mutableStateOf("") }
-    var heartRate by remember { mutableStateOf(78) }
-    var isConnected by remember { mutableStateOf(false) }
+    val heartRate by remember { mutableStateOf(78) }
+    val isConnected by remember { mutableStateOf(false) }
 
     LaunchedEffect(userId) {
         db.collection("users").document(userId)
@@ -32,6 +34,22 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 if (document.exists()) {
                     userName = document.getString("name") ?: "Usuario"
                     userRole = document.getString("role") ?: "patient"
+
+                    // AUTOMATIZACIÓN: Si el usuario actual es un cuidador, registramos su Token FCM en Firestore
+                    if (userRole == "caregiver") {
+                        com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+                            .addOnSuccessListener { token ->
+                                // Guardamos el token dentro del documento del cuidador
+                                db.collection("users").document(userId)
+                                    .update("fcmToken", token)
+                                    .addOnSuccessListener {
+                                        Log.d("FCM_AUTOMATION", "Token del cuidador guardado con éxito en Firestore")
+                                    }
+                            }
+                            .addOnFailureListener { e ->
+                                Log.e("FCM_AUTOMATION", "Error al obtener el Token FCM", e)
+                            }
+                    }
                 }
             }
             .addOnFailureListener {
@@ -70,31 +88,31 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 )
             ) {
                 Text(
-                    text = if (isConnected) "✅ BanDIt Conectado" else "❌ BanDIt Desconectado",
+                    text = if (isConnected) "✅ BanDIT Conectado" else "❌ BanDIT Desconectado",
                     modifier = Modifier.padding(16.dp),
                     color = Color.White,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            // Contenido según rol (espera a que userRole cargue)
+            // Contenido según rol
             when (userRole) {
                 "patient" -> PatientContent(
                     userId = userId,
                     heartRate = heartRate,
-                    isConnected = isConnected,
-                    onSimulate = { heartRate = (60..115).random() },
-                    onManualAlert = {
-                        Toast.makeText(context, "🚨 Alerta manual activada", Toast.LENGTH_LONG).show()
-                    }
+                    db = db
                 )
+
                 "caregiver" -> CaregiverContent(
                     userId = userId,
                     db = db
                 )
+
                 "" -> {
-                    // Todavía cargando el rol, mostrar indicador
-                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth(),
+                        contentAlignment = Alignment.Center
+                    ) {
                         CircularProgressIndicator()
                     }
                 }
@@ -103,16 +121,18 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
     }
 }
 
-// Pantalla del Paciente
+// ==========================================
+// PANTALLA DEL PACIENTE
+// ==========================================
 
 @Composable
 fun PatientContent(
     userId: String,
     heartRate: Int,
-    isConnected: Boolean,
-    onSimulate: () -> Unit,
-    onManualAlert: () -> Unit
+    db: FirebaseFirestore
 ) {
+    val context = LocalContext.current
+
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
 
         // Frecuencia cardíaca
@@ -128,29 +148,27 @@ fun PatientContent(
             }
         }
 
+        // Código de Paciente (Copiable)
         Card(modifier = Modifier.fillMaxWidth()) {
-            val context = LocalContext.current
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(16.dp) // Añadimos padding para que no pegue a los bordes
-            ) {
-                Text(
-                    text = userId,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF1976D2),
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { // <-- La lógica de copiar ahora va aquí
-                            val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                                    as android.content.ClipboardManager
-
-                            val clip = android.content.ClipData.newPlainText("userId", userId)
-                            clipboard.setPrimaryClip(clip)
-
-                            Toast.makeText(context, "Código copiado 📋", Toast.LENGTH_SHORT).show()
-                        }
-                )
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text("Código de Paciente", color = Color.Blue, fontWeight = FontWeight.Bold)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = userId,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF1976D2),
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable {
+                                val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                val clip = android.content.ClipData.newPlainText("userId", userId)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "Código copiado 📋", Toast.LENGTH_SHORT).show()
+                            }
+                    )
+                }
             }
         }
 
@@ -167,33 +185,38 @@ fun PatientContent(
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        // Botón de Alerta Crítica (Modificado para impactar Firestore)
         Button(
-            onClick = onManualAlert,
+            onClick = {
+                Toast.makeText(context, "🚨 Transmitiendo alerta de crisis...", Toast.LENGTH_SHORT).show()
+
+                val alertUpdates = mapOf(
+                    "isCrisis" to true,
+                    "lastAlertTime" to com.google.firebase.Timestamp.now()
+                )
+
+                db.collection("users").document(userId)
+                    .update(alertUpdates)
+                    .addOnSuccessListener {
+                        Toast.makeText(context, "🚨 Alerta enviada a tu cuidador", Toast.LENGTH_LONG).show()
+                    }
+                    .addOnFailureListener {
+                        Toast.makeText(context, "❌ Error de red al alertar", Toast.LENGTH_SHORT).show()
+                    }
+            },
             modifier = Modifier
                 .fillMaxWidth()
                 .height(70.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
         ) {
-            Text("🚨 ACTIVAR ALERTA MANUAL", fontSize = 16.sp)
-        }
-
-        Button(
-            onClick = onSimulate,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Simular Pulso")
-        }
-
-        Button(
-            onClick = { /* próximamente */ },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("👥 Gestionar Contactos de Emergencia")
+            Text("🚨 ACTIVAR ALERTA MANUAL", fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
-// Pantalla del Cuidador/Familiar
+// ==========================================
+// PANTALLA DEL CUIDADOR / FAMILIAR
+// ==========================================
 
 @Composable
 fun CaregiverContent(userId: String, db: FirebaseFirestore) {
@@ -202,7 +225,9 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
     var linkedPatientId by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // Primero carga el ID del paciente vinculado, luego escucha sus datos en tiempo real
+    // Control del diálogo emergente de alerta
+    var showCrisisDialog by remember { mutableStateOf(false) }
+
     LaunchedEffect(userId) {
         db.collection("users").document(userId)
             .get()
@@ -211,11 +236,18 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
                 isLoading = false
 
                 if (linkedPatientId != null) {
+                    // Escucha activa en tiempo real al paciente vinculado
                     db.collection("users").document(linkedPatientId!!)
                         .addSnapshotListener { snapshot, _ ->
                             if (snapshot != null && snapshot.exists()) {
                                 patientName = snapshot.getString("name")
                                 patientHeartRate = (snapshot.getLong("heartRate") ?: 78).toInt()
+
+                                // REVISIÓN DE CRISIS: Si cambia a true, activa el Pop-up de inmediato
+                                val isCrisis = snapshot.getBoolean("isCrisis") ?: false
+                                if (isCrisis) {
+                                    showCrisisDialog = true
+                                }
                             }
                         }
                 }
@@ -225,19 +257,54 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
             }
     }
 
+    // INTERRUPCIÓN DE PANTALLA: Diálogo de Alerta Máxima
+    if (showCrisisDialog) {
+        AlertDialog(
+            onDismissRequest = { /* No se puede cerrar tocando fuera */ },
+            title = {
+                Text(
+                    text = "🚨 ¡ALERTA DE CRISIS!",
+                    color = Color.Red,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 22.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "El paciente $patientName necesita asistencia inmediata. Ha activado el protocolo de emergencia.",
+                    fontSize = 16.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
+                    onClick = {
+                        showCrisisDialog = false
+                        // Reseteamos el estado de crisis en la base de datos para apagar la alarma
+                        linkedPatientId?.let { pid ->
+                            db.collection("users").document(pid).update("isCrisis", false)
+                        }
+                    }
+                ) {
+                    Text("ATENDER / APAGAR ALARMA", color = Color.White)
+                }
+            }
+        )
+    }
+
+    // UI Estándar del Cuidador
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         when {
             isLoading -> {
                 Box(
                     modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = androidx.compose.ui.Alignment.Center
+                    contentAlignment = Alignment.Center
                 ) {
                     CircularProgressIndicator()
                 }
             }
 
             linkedPatientId == null -> {
-                // No tiene paciente vinculado
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(20.dp)) {
                         Text(
@@ -247,7 +314,7 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            "Pide al paciente su código y crea una cuenta nueva ingresándolo en el campo 'Código del paciente'.",
+                            "Pide al paciente su código y regístralo para poder monitorear sus signos.",
                             color = Color.Gray
                         )
                     }
@@ -255,7 +322,6 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
             }
 
             else -> {
-                // Tiene paciente vinculado, muestra sus datos
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(20.dp)) {
                         Text(

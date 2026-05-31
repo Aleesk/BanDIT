@@ -66,6 +66,7 @@ dependencies {
     // implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // ================== FIREBASE ==================
+    implementation("com.google.firebase:firebase-messaging-ktx:24.1.0")
     implementation(platform("com.google.firebase:firebase-bom:34.12.0"))
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")

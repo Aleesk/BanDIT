@@ -26,7 +26,6 @@ fun LoginRegisterScreen(onLoginSuccess: (String) -> Unit) {
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     var selectedRole by remember { mutableStateOf("patient") }
-    // IMPORTANTE: patientCode debe estar aquí arriba, no dentro del if
     var patientCode by remember { mutableStateOf("") }
 
     Column(
@@ -69,7 +68,7 @@ fun LoginRegisterScreen(onLoginSuccess: (String) -> Unit) {
                 FilterChip(
                     selected = selectedRole == "caregiver",
                     onClick = { selectedRole = "caregiver" },
-                    label = { Text("Soy familiar") },
+                    label = { Text("Soy cuidador") },
                     modifier = Modifier.weight(1f)
                 )
             }
