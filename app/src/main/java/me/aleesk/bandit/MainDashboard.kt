@@ -14,7 +14,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.messaging.FirebaseMessaging
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,11 +34,9 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                     userName = document.getString("name") ?: "Usuario"
                     userRole = document.getString("role") ?: "patient"
 
-                    // AUTOMATIZACIÓN: Si el usuario actual es un cuidador, registramos su Token FCM en Firestore
                     if (userRole == "caregiver") {
                         com.google.firebase.messaging.FirebaseMessaging.getInstance().token
                             .addOnSuccessListener { token ->
-                                // Guardamos el token dentro del documento del cuidador
                                 db.collection("users").document(userId)
                                     .update("fcmToken", token)
                                     .addOnSuccessListener {
@@ -95,7 +92,6 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 )
             }
 
-            // Contenido según rol
             when (userRole) {
                 "patient" -> PatientContent(
                     userId = userId,
@@ -172,7 +168,6 @@ fun PatientContent(
             }
         }
 
-        // Última alerta
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = Color.Red.copy(alpha = 0.1f))
@@ -185,7 +180,6 @@ fun PatientContent(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Botón de Alerta Crítica (Modificado para impactar Firestore)
         Button(
             onClick = {
                 Toast.makeText(context, "🚨 Transmitiendo alerta de crisis...", Toast.LENGTH_SHORT).show()
@@ -257,10 +251,9 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
             }
     }
 
-    // INTERRUPCIÓN DE PANTALLA: Diálogo de Alerta Máxima
     if (showCrisisDialog) {
         AlertDialog(
-            onDismissRequest = { /* No se puede cerrar tocando fuera */ },
+            onDismissRequest = {},
             title = {
                 Text(
                     text = "🚨 ¡ALERTA DE CRISIS!",
@@ -280,7 +273,6 @@ fun CaregiverContent(userId: String, db: FirebaseFirestore) {
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Red),
                     onClick = {
                         showCrisisDialog = false
-                        // Reseteamos el estado de crisis en la base de datos para apagar la alarma
                         linkedPatientId?.let { pid ->
                             db.collection("users").document(pid).update("isCrisis", false)
                         }

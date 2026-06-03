@@ -1,45 +1,61 @@
 package me.aleesk.bandit
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.content.Context
+import android.app.PendingIntent
+import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 
+@SuppressLint("MissingFirebaseInstanceTokenRefresh")
 class MyFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
         super.onMessageReceived(remoteMessage)
 
-        val title = remoteMessage.notification?.title ?: "🚨 ¡ALERTA DE CRISIS!"
-        val body = remoteMessage.notification?.body ?: "El paciente necesita asistencia."
+        val title = remoteMessage.notification?.title ?: "Alerta"
+        val body = remoteMessage.notification?.body ?: ""
 
-        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        showCrisisNotification(title, body)
+    }
+
+    private fun showCrisisNotification(title: String, body: String) {
         val channelId = "crisis_channel"
+        val notificationManager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
 
-        // Crear el canal de notificación (Requerido en Android 8.0+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
-                "Alertas Críticas",
-                NotificationManager.IMPORTANCE_HIGH // Alta prioridad para que suene e interrumpa
+                "Alertas de Crisis",
+                NotificationManager.IMPORTANCE_HIGH  // Aparece como heads-up
             ).apply {
-                description = "Canal para alertas de crisis de pacientes"
+                description = "Notificaciones de emergencia del paciente"
+                enableVibration(true)
+                enableLights(true)
             }
             notificationManager.createNotificationChannel(channel)
         }
 
-        // Construir la notificación
-        val notificationBuilder = NotificationCompat.Builder(this, channelId)
-            // Cambia la línea del icono por esta (un icono nativo estándar de sistema que siempre funciona):
-            .setSmallIcon(android.R.drawable.ic_dialog_alert)
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this, 0, intent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, channelId)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle(title)
             .setContentText(body)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
             .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(pendingIntent)
+            .build()
 
-        notificationManager.notify(100, notificationBuilder.build())
+        notificationManager.notify(1001, notification)
     }
 }
