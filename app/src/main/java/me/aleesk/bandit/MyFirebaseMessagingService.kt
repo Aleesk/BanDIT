@@ -14,10 +14,16 @@ import com.google.firebase.messaging.RemoteMessage
 class MyFirebaseMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(remoteMessage: RemoteMessage) {
-        super.onMessageReceived(remoteMessage)
 
-        val title = remoteMessage.notification?.title ?: "Alerta"
-        val body = remoteMessage.notification?.body ?: ""
+        android.util.Log.d("FCM_TEST", "Mensaje recibido")
+
+        val title =
+            remoteMessage.data["title"]
+                ?: "Alerta"
+
+        val body =
+            remoteMessage.data["body"]
+                ?: ""
 
         showCrisisNotification(title, body)
     }
