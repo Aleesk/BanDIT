@@ -7,6 +7,7 @@ import com.google.firebase.auth.FirebaseAuthInvalidUserException
 import com.google.firebase.auth.FirebaseAuthUserCollisionException
 import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -62,21 +63,27 @@ object AuthRepository {
         role: String,
         patientEmail: String
     ): AuthOutcome {
-        var createdAccount = false
-        return try {
-            val signUpResult = auth.createUserWithEmailAndPassword(email, password).awaitResult()
-            val uid = signUpResult.user?.uid
-                ?: return AuthOutcome.Failure("Error creando el usuario")
-            createdAccount = true
+        var createdAuthUser = false
+        var uid: String? = null
 
+        return try {
+            // 1. Crear el usuario en Firebase Auth
+            val signUpResult = auth.createUserWithEmailAndPassword(email, password).awaitResult()
+            uid = signUpResult.user?.uid ?: return AuthOutcome.Failure("Error creando las credenciales")
+            createdAuthUser = true
+
+            // 2. Preparar la información del perfil
             val userData = hashMapOf<String, Any>(
                 "name" to name,
                 "email" to email,
                 "role" to role,
                 "createdAt" to System.currentTimeMillis()
             )
-            db.collection("users").document(uid).set(userData).awaitResult()
 
+            // Usamos SetOptions.merge() por si el token FCM se guardó un milisegundo antes
+            db.collection("users").document(uid).set(userData, SetOptions.merge()).awaitResult()
+
+            // 3. Si es cuidador, registrar la solicitud de paciente
             if (role == "caregiver" && patientEmail.isNotBlank()) {
                 createCaregiverRequest(
                     patientEmail = patientEmail,
@@ -88,12 +95,15 @@ object AuthRepository {
 
             AuthOutcome.Success(uid)
         } catch (e: Exception) {
-            // Si la cuenta de Auth llegó a crearse pero algo después falló (p. ej.
-            // la escritura en Firestore), la eliminamos para no dejar cuentas
-            // huérfanas sin documento de perfil — esto es lo que antes te dejaba
-            // "atascado" con un correo que Firebase ya consideraba en uso.
-            if (createdAccount) {
-                auth.currentUser?.delete()
+            android.util.Log.e("REGISTRO_FALLO", "Ocurrió un error en el proceso: ${e.message}", e)
+
+            // Si la base de datos falló, limpiamos la cuenta de Auth de forma síncrona
+            if (createdAuthUser && auth.currentUser != null) {
+                try {
+                    auth.currentUser?.delete()?.awaitResult()
+                } catch (deleteEx: Exception) {
+                    // Silenciar error de borrado si la sesión expiró
+                }
             }
             AuthOutcome.Failure(mapAuthError(e))
         }

@@ -1,10 +1,13 @@
 package me.aleesk.bandit
 
-import android.util.Log
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -21,12 +24,19 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 // ─── Navigation Tabs ──────────────────────────────────────────────────────────
 
@@ -38,12 +48,37 @@ enum class DashboardTab { HOME, PROFILE }
 @Composable
 fun MainDashboard(userId: String, onLogout: () -> Unit) {
     val context = LocalContext.current
-    val db      = FirebaseFirestore.getInstance()
+    val db = FirebaseFirestore.getInstance()
 
-    var userName   by remember { mutableStateOf("") }
-    var userRole   by remember { mutableStateOf("") }
+    var userName by remember { mutableStateOf("") }
+    var userRole by remember { mutableStateOf("") }
+    var userEmail by remember { mutableStateOf("") }
     var isConnected by remember { mutableStateOf(false) }
     var currentTab by remember { mutableStateOf(DashboardTab.HOME) }
+
+    DisposableEffect(userId) {
+        val listener = db.collection("users").document(userId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Toast.makeText(context, "Error de conexión", Toast.LENGTH_SHORT).show()
+                    return@addSnapshotListener
+                }
+
+                if (snapshot != null && snapshot.exists()) {
+                    userName = snapshot.getString("name") ?: "Usuario"
+                    userRole = snapshot.getString("role") ?: "patient"
+                    userEmail = snapshot.getString("email") ?: ""
+                    // La conectividad de red de Firebase se puede inferir del metadata
+                    isConnected = !snapshot.metadata.isFromCache
+
+                    saveFcmToken(db, userId)
+                }
+            }
+
+        onDispose {
+            listener.remove() // Evita fugas de memoria al cerrar sesión
+        }
+    }
 
     // Load user profile once
     LaunchedEffect(userId) {
@@ -52,6 +87,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 if (doc.exists()) {
                     userName = doc.getString("name") ?: "Usuario"
                     userRole = doc.getString("role") ?: "patient"
+                    userEmail = doc.getString("email").toString()
                     saveFcmToken(db, userId)
                 }
             }
@@ -78,13 +114,26 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .background(if (!isConnected) BanDITColors.SuccessGreenDim else Color(0xFF2D1B0E))
-                            .border(1.dp, if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange, RoundedCornerShape(20.dp))
+                            .background(
+                                if (!isConnected) BanDITColors.SuccessGreenDim else Color(
+                                    0xFF2D1B0E
+                                )
+                            )
+                            .border(
+                                1.dp,
+                                if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
+                                RoundedCornerShape(20.dp)
+                            )
                             .padding(horizontal = 12.dp, vertical = 6.dp)
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
                             Box(
-                                modifier = Modifier.size(7.dp).clip(CircleShape)
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
                                     .background(if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange)
                             )
                             Text(
@@ -98,7 +147,11 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                     }
                     Spacer(Modifier.width(8.dp))
                     IconButton(onClick = onLogout) {
-                        Icon(Icons.Outlined.Logout, contentDescription = "Salir", tint = BanDITColors.TextSecond)
+                        Icon(
+                            Icons.Outlined.Logout,
+                            contentDescription = "Salir",
+                            tint = BanDITColors.TextSecond
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = BanDITColors.NavySurface)
@@ -109,28 +162,28 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 NavigationBar(containerColor = BanDITColors.NavySurface, tonalElevation = 0.dp) {
                     NavigationBarItem(
                         selected = currentTab == DashboardTab.HOME,
-                        onClick  = { currentTab = DashboardTab.HOME },
-                        icon     = { Icon(Icons.Outlined.MonitorHeart, contentDescription = null) },
-                        label    = { Text("Inicio") },
-                        colors   = NavigationBarItemDefaults.colors(
-                            selectedIconColor      = BanDITColors.CyanPrimary,
-                            selectedTextColor      = BanDITColors.CyanPrimary,
-                            unselectedIconColor    = BanDITColors.TextMuted,
-                            unselectedTextColor    = BanDITColors.TextMuted,
-                            indicatorColor         = BanDITColors.CyanDim
+                        onClick = { currentTab = DashboardTab.HOME },
+                        icon = { Icon(Icons.Outlined.MonitorHeart, contentDescription = null) },
+                        label = { Text("Inicio") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = BanDITColors.CyanPrimary,
+                            selectedTextColor = BanDITColors.CyanPrimary,
+                            unselectedIconColor = BanDITColors.TextMuted,
+                            unselectedTextColor = BanDITColors.TextMuted,
+                            indicatorColor = BanDITColors.CyanDim
                         )
                     )
                     NavigationBarItem(
                         selected = currentTab == DashboardTab.PROFILE,
-                        onClick  = { currentTab = DashboardTab.PROFILE },
-                        icon     = { Icon(Icons.Outlined.Person, contentDescription = null) },
-                        label    = { Text("Perfil") },
-                        colors   = NavigationBarItemDefaults.colors(
-                            selectedIconColor      = BanDITColors.CyanPrimary,
-                            selectedTextColor      = BanDITColors.CyanPrimary,
-                            unselectedIconColor    = BanDITColors.TextMuted,
-                            unselectedTextColor    = BanDITColors.TextMuted,
-                            indicatorColor         = BanDITColors.CyanDim
+                        onClick = { currentTab = DashboardTab.PROFILE },
+                        icon = { Icon(Icons.Outlined.Person, contentDescription = null) },
+                        label = { Text("Perfil") },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = BanDITColors.CyanPrimary,
+                            selectedTextColor = BanDITColors.CyanPrimary,
+                            unselectedIconColor = BanDITColors.TextMuted,
+                            unselectedTextColor = BanDITColors.TextMuted,
+                            indicatorColor = BanDITColors.CyanDim
                         )
                     )
                 }
@@ -141,21 +194,62 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
             userRole.isEmpty() -> FullScreenLoader()
             currentTab == DashboardTab.HOME && userRole == "patient" ->
                 PatientHomeScreen(userId = userId, db = db, modifier = Modifier.padding(padding))
+
             currentTab == DashboardTab.HOME && userRole == "caregiver" ->
                 CaregiverHomeScreen(userId = userId, db = db, modifier = Modifier.padding(padding))
+
             currentTab == DashboardTab.PROFILE ->
-                ProfileScreen(userId = userId, userName = userName, userRole = userRole, db = db, modifier = Modifier.padding(padding))
+                ProfileScreen(
+                    userId = userId,
+                    userName = userName,
+                    userRole = userRole,
+                    userEmail = userEmail,
+                    db = db,
+                    modifier = Modifier.padding(padding)
+                )
         }
     }
 }
 
-// ─── Patient Home ─────────────────────────────────────────────────────────────
+// ─── Patient Home ─────
+
+/** Cambia esta URL por la de tu servidor en producción o tu IP local en desarrollo. */
+private const val BACKEND_URL = "http://192.168.100.96:3000"   // 10.0.2.2 = localhost desde el emulador
 
 @Composable
 fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val heartRate by remember { mutableStateOf(72) }
-    val alertHistory = remember { listOf<String>() } // TODO: pull from Firestore
+    val alertHistory = remember { listOf<String>() }
+
+    var isSendingAlert by remember { mutableStateOf(false) }
+
+    // Crear el canal de notificaciones en Android 8+
+    LaunchedEffect(Unit) {
+        BanDITMessagingService.createNotificationChannel(context)
+    }
+
+    // Solicitar permiso de notificaciones (Android 13+)
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(
+                context,
+                "Activa las notificaciones para recibir alertas de crisis",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     Column(
         modifier = modifier
@@ -165,49 +259,133 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // BPM Hero Card
         BpmHeroCard(heartRate = heartRate)
-
-        // Alert History
         AlertHistoryCard(alerts = alertHistory)
-
         Spacer(Modifier.height(4.dp))
 
-        // Manual Alert Button
         Button(
             onClick = {
-                Toast.makeText(context, "Transmitiendo alerta...", Toast.LENGTH_SHORT).show()
-                db.collection("users").document(userId).update(
-                    mapOf(
-                        "isCrisis"       to true,
-                        "lastAlertTime"  to com.google.firebase.Timestamp.now()
+                if (isSendingAlert) return@Button
+                isSendingAlert = true
+
+                scope.launch {
+                    // 1. Marcar crisis en Firestore para que el cuidador lo vea
+                    //    si está en la app en ese momento.
+                    db.collection("users").document(userId).update(
+                        mapOf(
+                            "isCrisis" to true,
+                            "lastAlertTime" to Timestamp.now()
+                        )
                     )
-                ).addOnSuccessListener {
-                    Toast.makeText(context, "Alerta enviada al cuidador", Toast.LENGTH_LONG).show()
-                }.addOnFailureListener {
-                    Toast.makeText(context, "Error de red al alertar", Toast.LENGTH_SHORT).show()
+
+                    // 2. Llamar al backend para enviar la notificación push.
+                    //    Antes esto no existía — el cuidador solo veía la alerta
+                    //    si ya tenía la app abierta.
+                    val result = sendAlertToBackend(userId)
+
+                    isSendingAlert = false
+
+                    val message = if (result) {
+                        "✓ Alerta enviada al cuidador"
+                    } else {
+                        "Alerta registrada (no se pudo notificar al cuidador)"
+                    }
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
             },
-            modifier = Modifier.fillMaxWidth().height(64.dp),
-            shape  = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(64.dp),
+            shape = RoundedCornerShape(16.dp),
+            enabled = !isSendingAlert,
             colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed)
         ) {
-            Icon(Icons.Outlined.Warning, contentDescription = null, tint = Color.White)
-            Spacer(Modifier.width(10.dp))
-            Text("ACTIVAR ALERTA MANUAL", fontSize = 15.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+            if (isSendingAlert) {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
+            } else {
+                Icon(Icons.Outlined.Warning, contentDescription = null, tint = Color.White)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "ACTIVAR ALERTA MANUAL",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp
+                )
+            }
         }
     }
 }
 
-// ─── Caregiver Home ───────────────────────────────────────────────────────────
+/**
+ * Llama a POST /sendAlert en el backend.
+ * Devuelve true si la notificación se envió correctamente.
+ * Se ejecuta en Dispatchers.IO para no bloquear el hilo principal.
+ */
+private suspend fun sendAlertToBackend(patientId: String): Boolean =
+    withContext(Dispatchers.IO) {
+        try {
+            val url = URL("$BACKEND_URL/sendAlert")
+            val connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+                doOutput = true
+                connectTimeout = 8_000
+                readTimeout = 8_000
+            }
+
+            val body = JSONObject().put("patientId", patientId).toString()
+            connection.outputStream.bufferedWriter().use { it.write(body) }
+
+            val responseCode = connection.responseCode
+            connection.disconnect()
+
+            responseCode in 200..299
+        } catch (e: Exception) {
+            android.util.Log.e("BanDIT", "Error enviando alerta: ${e::class.simpleName}: ${e.message}")
+            false
+        }
+    }
+
+// ─── Caregiver Home ────
 
 @Composable
 fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
-    var patientName      by remember { mutableStateOf<String?>(null) }
+    var patientName by remember { mutableStateOf<String?>(null) }
     var patientHeartRate by remember { mutableStateOf<Int?>(null) }
-    var linkedPatientId  by remember { mutableStateOf<String?>(null) }
-    var isLoading        by remember { mutableStateOf(true) }
+    var linkedPatientId by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
     var showCrisisDialog by remember { mutableStateOf(false) }
+
+    DisposableEffect(userId) {
+        val userListener = db.collection("users").document(userId)
+            .addSnapshotListener { userSnap, _ ->
+                if (userSnap != null && userSnap.exists()) {
+                    linkedPatientId = userSnap.getString("linkedPatientId")
+                    isLoading = false
+                }
+            }
+
+        onDispose { userListener.remove() }
+    }
+
+    // Escuchamos los signos vitales del paciente en tiempo real (BPM y Crisis)
+    DisposableEffect(linkedPatientId) {
+        val patientListener = linkedPatientId?.let { pid ->
+            db.collection("users").document(pid)
+                .addSnapshotListener { snap, _ ->
+                    if (snap != null && snap.exists()) {
+                        patientName = snap.getString("name")
+                        patientHeartRate = (snap.getLong("heartRate") ?: 78).toInt()
+                        if (snap.getBoolean("isCrisis") == true) {
+                            showCrisisDialog = true
+                        }
+                    }
+                }
+        }
+
+        onDispose { patientListener?.remove() }
+    }
 
     LaunchedEffect(userId) {
         db.collection("users").document(userId).get()
@@ -217,7 +395,7 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                 linkedPatientId?.let { pid ->
                     db.collection("users").document(pid).addSnapshotListener { snap, _ ->
                         if (snap != null && snap.exists()) {
-                            patientName      = snap.getString("name")
+                            patientName = snap.getString("name")
                             patientHeartRate = (snap.getLong("heartRate") ?: 78).toInt()
                             if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
                         }
@@ -230,9 +408,11 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
     if (showCrisisDialog) {
         CrisisAlertDialog(
             patientName = patientName ?: "el paciente",
-            onDismiss   = {
+            onDismiss = {
                 showCrisisDialog = false
-                linkedPatientId?.let { db.collection("users").document(it).update("isCrisis", false) }
+                linkedPatientId?.let {
+                    db.collection("users").document(it).update("isCrisis", false)
+                }
             }
         )
     }
@@ -246,10 +426,13 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         when {
-            isLoading            -> FullScreenLoader()
+            isLoading -> FullScreenLoader()
             linkedPatientId == null -> NoPatientLinkedCard()
             else -> {
-                BpmHeroCard(heartRate = patientHeartRate ?: 0, label = "FC de ${patientName ?: "Paciente"}")
+                BpmHeroCard(
+                    heartRate = patientHeartRate ?: 0,
+                    label = "FC de ${patientName ?: "Paciente"}"
+                )
                 AlertHistoryCard(alerts = emptyList())
             }
         }
@@ -263,6 +446,7 @@ fun ProfileScreen(
     userId: String,
     userName: String,
     userRole: String,
+    userEmail: String,
     db: FirebaseFirestore,
     modifier: Modifier = Modifier
 ) {
@@ -290,9 +474,14 @@ fun ProfileScreen(
                 .padding(24.dp),
             contentAlignment = Alignment.Center
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Box(
-                    modifier = Modifier.size(72.dp).clip(CircleShape)
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(CircleShape)
                         .background(BanDITColors.CyanDim)
                         .border(2.dp, BanDITColors.CyanPrimary, CircleShape),
                     contentAlignment = Alignment.Center
@@ -304,7 +493,12 @@ fun ProfileScreen(
                         color = BanDITColors.CyanPrimary
                     )
                 }
-                Text(userName, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = BanDITColors.TextPrimary)
+                Text(
+                    userName,
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = BanDITColors.TextPrimary
+                )
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(12.dp))
@@ -322,35 +516,6 @@ fun ProfileScreen(
 
         // Patient code (only for patients)
         if (userRole == "patient") {
-            MedCard(title = "Código de Paciente", icon = Icons.Outlined.QrCode) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Comparte este código con tu cuidador", color = BanDITColors.TextSecond, fontSize = 13.sp)
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(BanDITColors.NavyDeep)
-                            .border(1.dp, BanDITColors.CyanMuted, RoundedCornerShape(10.dp))
-                            .clickable {
-                                val cb = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                cb.setPrimaryClip(android.content.ClipData.newPlainText("userId", userId))
-                                Toast.makeText(context, "Código copiado", Toast.LENGTH_SHORT).show()
-                            }
-                            .padding(12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            userId,
-                            color = BanDITColors.CyanPrimary,
-                            fontSize = 13.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Icon(Icons.Outlined.ContentCopy, contentDescription = "Copiar", tint = BanDITColors.TextSecond, modifier = Modifier.size(18.dp))
-                    }
-                }
-            }
             MedCard(
                 title = "Solicitudes de cuidadores",
                 icon = Icons.Outlined.PersonAdd
@@ -362,15 +527,24 @@ fun ProfileScreen(
         // Info items
         MedCard(title = "Información de Cuenta", icon = Icons.Outlined.ManageAccounts) {
             ProfileInfoRow(label = "Nombre", value = userName)
-            HorizontalDivider(color = BanDITColors.NavyBorder, modifier = Modifier.padding(vertical = 8.dp))
-            ProfileInfoRow(label = "Rol", value = if (userRole == "patient") "Paciente" else "Cuidador / Familiar")
-            HorizontalDivider(color = BanDITColors.NavyBorder, modifier = Modifier.padding(vertical = 8.dp))
-            ProfileInfoRow(label = "ID de Usuario", value = userId.take(8) + "…")
+            HorizontalDivider(
+                color = BanDITColors.NavyBorder,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+            ProfileInfoRow(
+                label = "Rol",
+                value = if (userRole == "patient") "Paciente" else "Cuidador / Familiar"
+            )
+            HorizontalDivider(
+                color = BanDITColors.NavyBorder,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+            ProfileInfoRow(label = "Correo", value = userEmail)
         }
     }
 }
 
-// ─── Reusable Components ──────────────────────────────────────────────────────
+// ─── Reusable Components ─────
 
 @Composable
 fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
@@ -385,11 +559,27 @@ fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
             .padding(24.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Outlined.Favorite, contentDescription = null, tint = BanDITColors.AlertRed, modifier = Modifier.size(18.dp))
-                Text(label, color = BanDITColors.TextSecond, fontSize = 13.sp, letterSpacing = 0.5.sp)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    Icons.Outlined.Favorite,
+                    contentDescription = null,
+                    tint = BanDITColors.AlertRed,
+                    modifier = Modifier.size(18.dp)
+                )
+                Text(
+                    label,
+                    color = BanDITColors.TextSecond,
+                    fontSize = 13.sp,
+                    letterSpacing = 0.5.sp
+                )
             }
-            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                verticalAlignment = Alignment.Bottom,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 Text(
                     "$heartRate",
                     fontSize = 72.sp,
@@ -397,9 +587,20 @@ fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
                     color = BanDITColors.CyanPrimary,
                     lineHeight = 72.sp
                 )
-                Text("BPM", fontSize = 22.sp, fontWeight = FontWeight.Medium, color = BanDITColors.TextSecond, modifier = Modifier.padding(bottom = 12.dp))
+                Text(
+                    "BPM",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = BanDITColors.TextSecond,
+                    modifier = Modifier.padding(bottom = 12.dp)
+                )
             }
-            Text("EN TIEMPO REAL", fontSize = 10.sp, letterSpacing = 2.sp, color = BanDITColors.TextMuted)
+            Text(
+                "EN TIEMPO REAL",
+                fontSize = 10.sp,
+                letterSpacing = 2.sp,
+                color = BanDITColors.TextMuted
+            )
         }
     }
 }
@@ -412,12 +613,22 @@ fun AlertHistoryCard(alerts: List<String>) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = BanDITColors.SuccessGreen, modifier = Modifier.size(20.dp))
+                Icon(
+                    Icons.Outlined.CheckCircle,
+                    contentDescription = null,
+                    tint = BanDITColors.SuccessGreen,
+                    modifier = Modifier.size(20.dp)
+                )
                 Text("Sin alertas recientes", color = BanDITColors.TextSecond, fontSize = 14.sp)
             }
         } else {
             alerts.forEach { alert ->
-                Text("• $alert", color = BanDITColors.TextPrimary, fontSize = 14.sp, modifier = Modifier.padding(vertical = 2.dp))
+                Text(
+                    "• $alert",
+                    color = BanDITColors.TextPrimary,
+                    fontSize = 14.sp,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
             }
         }
     }
@@ -434,9 +645,23 @@ fun MedCard(title: String, icon: ImageVector, content: @Composable ColumnScope.(
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(icon, contentDescription = null, tint = BanDITColors.CyanPrimary, modifier = Modifier.size(18.dp))
-            Text(title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = BanDITColors.TextSecond, letterSpacing = 0.5.sp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = BanDITColors.CyanPrimary,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                title,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = BanDITColors.TextSecond,
+                letterSpacing = 0.5.sp
+            )
         }
         content()
     }
@@ -446,14 +671,24 @@ fun MedCard(title: String, icon: ImageVector, content: @Composable ColumnScope.(
 fun ProfileInfoRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = BanDITColors.TextMuted, fontSize = 13.sp)
-        Text(value, color = BanDITColors.TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(
+            value,
+            color = BanDITColors.TextPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
 @Composable
 fun NoPatientLinkedCard() {
     MedCard(title = "Sin paciente vinculado", icon = Icons.Outlined.PersonOff) {
-        Text("Pide al paciente su código de 28 caracteres y regístralo en tu perfil para monitorear sus signos en tiempo real.", color = BanDITColors.TextSecond, fontSize = 14.sp, lineHeight = 22.sp)
+        Text(
+            "Pide al paciente su correo y regístralo en tu perfil para monitorear sus signos en tiempo real.",
+            color = BanDITColors.TextSecond,
+            fontSize = 14.sp,
+            lineHeight = 22.sp
+        )
     }
 }
 
@@ -461,11 +696,17 @@ fun NoPatientLinkedCard() {
 fun CrisisAlertDialog(patientName: String, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = {},
-        containerColor   = BanDITColors.NavyCard,
-        shape            = RoundedCornerShape(20.dp),
+        containerColor = BanDITColors.NavyCard,
+        shape = RoundedCornerShape(20.dp),
         title = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("ALERTA DE CRISIS", color = BanDITColors.AlertRed, fontWeight = FontWeight.Bold, fontSize = 18.sp, letterSpacing = 2.sp)
+                Text(
+                    "ALERTA DE CRISIS",
+                    color = BanDITColors.AlertRed,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    letterSpacing = 2.sp
+                )
                 Text("Intervención requerida", color = BanDITColors.TextSecond, fontSize = 13.sp)
             }
         },
@@ -478,10 +719,15 @@ fun CrisisAlertDialog(patientName: String, onDismiss: () -> Unit) {
         confirmButton = {
             Button(
                 onClick = onDismiss,
-                shape  = RoundedCornerShape(12.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed)
             ) {
-                Text("ATENDER / APAGAR ALARMA", fontWeight = FontWeight.Bold, fontSize = 13.sp, letterSpacing = 0.5.sp)
+                Text(
+                    "ATENDER / APAGAR ALARMA",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    letterSpacing = 0.5.sp
+                )
             }
         }
     )
@@ -539,10 +785,9 @@ fun PendingRequests(patientId: String) {
 
                 Button(
                     onClick = {
+                        val caregiverId = doc.getString("caregiverId") ?: return@Button
 
-                        val caregiverId =
-                            doc.getString("caregiverId") ?: return@Button
-
+                        // 1. Registrar relación en la tabla intermedia
                         db.collection("patient_caregivers")
                             .add(
                                 mapOf(
@@ -552,10 +797,13 @@ fun PendingRequests(patientId: String) {
                                 )
                             )
 
-                        doc.reference.update(
-                            "status",
-                            "accepted"
-                        )
+                        // 2. Cambiar el estado de la solicitud
+                        doc.reference.update("status", "accepted")
+
+                        // 3. Modificar el perfil del cuidador para romper la pantalla de espera al instante
+                        db.collection("users")
+                            .document(caregiverId)
+                            .update("linkedPatientId", patientId)
                     }
                 ) {
                     Text("Aceptar")
@@ -585,7 +833,7 @@ fun FullScreenLoader() {
     }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Helpers ───
 
 private fun saveFcmToken(
     db: FirebaseFirestore,

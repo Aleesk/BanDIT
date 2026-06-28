@@ -35,51 +35,25 @@ sealed class AuthState {
 fun BanDITApp(auth: FirebaseAuth) {
     var authState by remember { mutableStateOf<AuthState>(AuthState.Loading) }
 
-    // Escuchador del estado de autenticación
+    // Escuchador del estado de autenticación simplificado (Sin condiciones de carrera)
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { fa ->
-
             val user = fa.currentUser
-
             if (user == null) {
-
                 authState = AuthState.LoggedOut
-                return@AuthStateListener
+            } else {
+                // Si ya existe un usuario al abrir la app, cargamos directo.
+                // Si se acaba de crear, dejamos que la pantalla de registro termine su trabajo.
+                if (authState is AuthState.Loading) {
+                    authState = AuthState.LoggedIn(user.uid)
+                }
             }
-
-            FirebaseFirestore.getInstance()
-                .collection("users")
-                .document(user.uid)
-                .get()
-                .addOnSuccessListener { document ->
-
-                    if (document.exists()) {
-
-                        authState = AuthState.LoggedIn(user.uid)
-
-                    } else {
-
-                        FirebaseAuth.getInstance().signOut()
-
-                        authState = AuthState.LoggedOut
-                    }
-                }
-                .addOnFailureListener {
-
-                    FirebaseAuth.getInstance().signOut()
-
-                    authState = AuthState.LoggedOut
-                }
         }
-
         auth.addAuthStateListener(listener)
-
-        onDispose {
-            auth.removeAuthStateListener(listener)
-        }
+        onDispose { auth.removeAuthStateListener(listener) }
     }
 
-    // Efecto secundario: Sincronizar el token sin destruir el registro de la pantalla
+    // Efecto secundario: Sincronizar el token
     if (authState is AuthState.LoggedIn) {
         val uid = (authState as AuthState.LoggedIn).uid
 
@@ -91,27 +65,23 @@ fun BanDITApp(auth: FirebaseAuth) {
                         .document(uid)
 
                     userRef.update("fcmToken", token)
-                        .addOnSuccessListener {
-                            Log.d("FCM", "Token actualizado")
-                        }
-                        .addOnFailureListener { e ->
-                            Log.e(
-                                "FCM",
-                                "Documento de usuario inexistente",
-                                e
-                            )
-                        }
+                        .addOnSuccessListener { Log.d("FCM", "Token actualizado") }
+                        .addOnFailureListener { e -> Log.e("FCM", "Error al actualizar token", e) }
                 }
-                .addOnFailureListener { e ->
-                    Log.e("FCM", "Error al obtener el token de Firebase Messaging", e)
-                }
+                .addOnFailureListener { e -> Log.e("FCM", "Error FCM", e) }
         }
     }
 
     // Navegación de pantallas
     when (val s = authState) {
         is AuthState.Loading   -> SplashScreen()
-        is AuthState.LoggedOut -> LoginRegisterScreen { /* El AuthStateListener se encarga de cambiar la pantalla */ }
-        is AuthState.LoggedIn  -> MainDashboard(userId = s.uid, onLogout = auth::signOut)
+        is AuthState.LoggedOut -> LoginRegisterScreen { uid ->
+            // Cuando LoginRegisterScreen avise que tuvo éxito, cambiamos el estado
+            authState = AuthState.LoggedIn(uid)
+        }
+        is AuthState.LoggedIn  -> MainDashboard(userId = s.uid, onLogout = {
+            auth.signOut()
+            authState = AuthState.LoggedOut
+        })
     }
 }
