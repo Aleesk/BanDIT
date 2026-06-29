@@ -17,6 +17,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         auth = FirebaseAuth.getInstance()
 
+        BanDITMessagingService.createNotificationChannel(this)
+
         setContent {
             BanDITTheme {
                 BanDITApp(auth)

@@ -2,20 +2,17 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     id("com.google.gms.google-services")
+    alias(libs.plugins.kotlin.android)
 }
 
 android {
     namespace = "me.aleesk.bandit"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 35  // ← entero simple, no un bloque
 
     defaultConfig {
         applicationId = "me.aleesk.bandit"
         minSdk = 26
-        targetSdk = 36
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0"
 
@@ -31,6 +28,7 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -38,6 +36,9 @@ android {
 
     buildFeatures {
         compose = true
+    }
+    kotlinOptions {
+        jvmTarget = "17"
     }
 }
 
@@ -53,28 +54,20 @@ dependencies {
 
     implementation("androidx.compose.material:material-icons-extended")
 
-    // ================== AÑADIMOS ESTO ==================
+    // Permisos
+    implementation("com.google.accompanist:accompanist-permissions:0.37.3")
 
-    // Bluetooth Low Energy
-    implementation("androidx.core:core-ktx:1.15.0")
+    // Splash screen
+    implementation("androidx.core:core-splashscreen:1.2.0")
 
-    // Para manejar permisos modernos
-    implementation("com.google.accompanist:accompanist-permissions:0.37.2")
+    // Firebase (con BOM, no declarar versión individual en firebase-messaging-ktx)
+    implementation(platform("com.google.firebase:firebase-bom:33.1.0"))
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
+    implementation("com.google.firebase:firebase-messaging-ktx")
+    implementation("com.google.firebase:firebase-database-ktx")
 
-    // Para notificaciones push y alertas
-    implementation("androidx.core:core-splashscreen:1.0.1")
-
-    // Para mapas (lo agregaremos después)
-    // implementation("com.google.android.gms:play-services-maps:19.0.0")
-    // implementation("com.google.android.gms:play-services-location:21.3.0")
-
-    // ================== FIREBASE ==================
-    implementation("com.google.firebase:firebase-messaging-ktx:24.1.0")
-    implementation(platform("com.google.firebase:firebase-bom:34.12.0"))
-    implementation("com.google.firebase:firebase-auth")
-    implementation("com.google.firebase:firebase-firestore")
-    implementation("com.google.firebase:firebase-messaging")
-    implementation("com.google.firebase:firebase-database")
+    implementation(libs.play.services.location)
 
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
