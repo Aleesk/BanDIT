@@ -18,7 +18,7 @@ import com.google.firebase.firestore.FirebaseFirestore
 //  BleService — ForegroundService que mantiene la conexión BLE
 //  viva aunque la app esté en background o la pantalla apagada.
 //
-//  Desde la UI:
+//  Desde la UI:a
 //    BleService.startBleService(context)   → arranca el servicio
 //    BleService.stopBleService(context)    → detiene el servicio
 //    context.bindService(...)              → obtiene referencia al servicio

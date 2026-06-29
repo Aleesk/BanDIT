@@ -64,7 +64,7 @@
             </intent-filter>
         </service>
 
-        <!-- ForegroundService BLE — mantiene conexión viva en background -->
+        <!-- ForegroundService BLE — mantiene conexión viva en background a-->
         <service
             android:name=".BleService"
             android:exported="false"
