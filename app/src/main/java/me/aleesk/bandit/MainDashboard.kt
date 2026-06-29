@@ -214,7 +214,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
 // ─── Patient Home ─────
 
 /** Cambia esta URL por la de tu servidor en producción o tu IP local en desarrollo. */
-private const val BACKEND_URL = "http://192.168.100.96:3000"   // 10.0.2.2 = localhost desde el emulador
+private const val BACKEND_URL = "http://192.168.1.81:3000"   // 10.0.2.2 = localhost desde el emulador
 
 @Composable
 fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {

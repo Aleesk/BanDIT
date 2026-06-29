@@ -11,22 +11,6 @@ import com.google.firebase.messaging.RemoteMessage
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.auth.FirebaseAuth
 
-/**
- * Necesario para dos cosas:
- * 1. Mostrar notificaciones cuando la app está en PRIMER PLANO
- *    (FCM las suprime por defecto en ese estado).
- * 2. Persistir el nuevo token FCM en Firestore cuando Firebase lo rota.
- *
- * Registrar en AndroidManifest.xml dentro de <application>:
- *
- *   <service
- *       android:name=".BanDITMessagingService"
- *       android:exported="false">
- *     <intent-filter>
- *       <action android:name="com.google.firebase.MESSAGING_EVENT" />
- *     </intent-filter>
- *   </service>
- */
 class BanDITMessagingService : FirebaseMessagingService() {
 
     companion object {
