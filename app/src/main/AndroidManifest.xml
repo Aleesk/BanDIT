@@ -1,15 +1,35 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- ── Notificaciones y red (existentes) ── -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- ── BLE: Android 12+ (API 31+) ── -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- ── BLE: Android 11 e inferior ── -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="30" />
+
+    <!-- Declara que la app usa BLE (no requerido, pero recomendado) -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
+
     <queries>
         <package android:name="com.google.android.gms" />
         <intent>
             <action android:name="com.google.firebase.MESSAGING_EVENT" />
         </intent>
     </queries>
+
     <application
         android:usesCleartextTraffic="true"
         android:allowBackup="true"
@@ -27,7 +47,6 @@
             android:theme="@style/Theme.BanDIT">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
@@ -39,5 +58,4 @@
             </intent-filter>
         </service>
     </application>
-
 </manifest>
