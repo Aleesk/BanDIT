@@ -6,7 +6,6 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <!-- ── BLE: Android 12+ (API 31+) ── -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
@@ -21,7 +20,10 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"
         android:maxSdkVersion="30" />
 
-    <!-- Declara que la app usa BLE (no requerido, pero recomendado) -->
+    <!-- ── ForegroundService para mantener BLE vivo en background ── -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
 
     <queries>
@@ -41,6 +43,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.BanDIT">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -51,6 +54,8 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Firebase push notifications (existente) -->
         <service
             android:name=".BanDITMessagingService"
             android:exported="false">
@@ -58,5 +63,12 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- ForegroundService BLE — mantiene conexión viva en background -->
+        <service
+            android:name=".BleService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
     </application>
 </manifest>

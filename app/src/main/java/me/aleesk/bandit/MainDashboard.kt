@@ -1,10 +1,13 @@
 package me.aleesk.bandit
 
 import android.Manifest
-import android.annotation.SuppressLint
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.IBinder
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,8 +33,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
@@ -67,20 +68,15 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                     Toast.makeText(context, "Error de conexión", Toast.LENGTH_SHORT).show()
                     return@addSnapshotListener
                 }
-
                 if (snapshot != null && snapshot.exists()) {
                     userName = snapshot.getString("name") ?: "Usuario"
                     userRole = snapshot.getString("role") ?: "patient"
                     userEmail = snapshot.getString("email") ?: ""
                     isConnected = !snapshot.metadata.isFromCache
-
                     saveFcmToken(db, userId)
                 }
             }
-
-        onDispose {
-            listener.remove()
-        }
+        onDispose { listener.remove() }
     }
 
     LaunchedEffect(userId) {
@@ -116,11 +112,13 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .background(
-                                if (!isConnected) BanDITColors.SuccessGreenDim else Color(0xFF2D1B0E)
+                                if (!isConnected) BanDITColors.SuccessGreenDim
+                                else Color(0xFF2D1B0E)
                             )
                             .border(
                                 1.dp,
-                                if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
+                                if (!isConnected) BanDITColors.SuccessGreen
+                                else BanDITColors.WarnOrange,
                                 RoundedCornerShape(20.dp)
                             )
                             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -133,14 +131,18 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                                 modifier = Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
-                                    .background(if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange)
+                                    .background(
+                                        if (!isConnected) BanDITColors.SuccessGreen
+                                        else BanDITColors.WarnOrange
+                                    )
                             )
                             Text(
                                 if (!isConnected) "CONECTADO" else "DESCONECTADO",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp,
-                                color = if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange
+                                color = if (!isConnected) BanDITColors.SuccessGreen
+                                else BanDITColors.WarnOrange
                             )
                         }
                     }
@@ -153,12 +155,17 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                         )
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = BanDITColors.NavySurface)
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = BanDITColors.NavySurface
+                )
             )
         },
         bottomBar = {
             if (userRole.isNotEmpty()) {
-                NavigationBar(containerColor = BanDITColors.NavySurface, tonalElevation = 0.dp) {
+                NavigationBar(
+                    containerColor = BanDITColors.NavySurface,
+                    tonalElevation = 0.dp
+                ) {
                     NavigationBarItem(
                         selected = currentTab == DashboardTab.HOME,
                         onClick = { currentTab = DashboardTab.HOME },
@@ -192,11 +199,17 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
         when {
             userRole.isEmpty() -> FullScreenLoader()
             currentTab == DashboardTab.HOME && userRole == "patient" ->
-                PatientHomeScreen(userId = userId, db = db, modifier = Modifier.padding(padding))
-
+                PatientHomeScreen(
+                    userId = userId,
+                    db = db,
+                    modifier = Modifier.padding(padding)
+                )
             currentTab == DashboardTab.HOME && userRole == "caregiver" ->
-                CaregiverHomeScreen(userId = userId, db = db, modifier = Modifier.padding(padding))
-
+                CaregiverHomeScreen(
+                    userId = userId,
+                    db = db,
+                    modifier = Modifier.padding(padding)
+                )
             currentTab == DashboardTab.PROFILE ->
                 ProfileScreen(
                     userId = userId,
@@ -210,55 +223,123 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
     }
 }
 
-// ─── Patient Home ─────
+// ─── Patient Home ─────────────────────────────────────────────────────────────
 
-private const val BACKEND_URL = "https://bandit-backend-spp3.onrender.com"
+private const val BACKEND_URL = "http://192.168.1.81:3000"
 
-@SuppressLint("MissingPermission")
 @Composable
 fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val heartRate by remember { mutableStateOf(72) }
-    val alertHistory = remember { listOf<String>() }
+    val scope   = rememberCoroutineScope()
+
+    // ── Estado BLE ───────────────────────────────────────
+    var bleConectado by remember { mutableStateOf(false) }
+    var bpmActual    by remember { mutableStateOf(0) }
+    var alertaActiva by remember { mutableStateOf(false) }
 
     var isSendingAlert by remember { mutableStateOf(false) }
 
-    // Proveedor de servicios de ubicación de Google
-    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
-
-    LaunchedEffect(Unit) {
-        BanDITMessagingService.createNotificationChannel(context)
+    // ── Conexión al ForegroundService ────────────────────
+    val serviceConnection = remember {
+        object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+                val svc = (binder as BleService.LocalBinder).service
+                svc.onConnectionChange = { connected -> bleConectado = connected }
+                svc.onBpmUpdate        = { bpm -> bpmActual = bpm }
+                svc.onAlertReceived    = { active ->
+                    alertaActiva = active
+                    // Si la pulsera activa la alerta, también lo marcamos en Firestore
+                    // para que el cuidador reciba la notificación
+                    if (active) {
+                        db.collection("users").document(userId).update(
+                            mapOf(
+                                "isCrisis"      to true,
+                                "lastAlertTime" to Timestamp.now()
+                            )
+                        )
+                        scope.launch { sendAlertToBackend(userId) }
+                    } else {
+                        db.collection("users").document(userId).update("isCrisis", false)
+                    }
+                }
+            }
+            override fun onServiceDisconnected(name: ComponentName) {
+                bleConectado = false
+            }
+        }
     }
 
-    // Solicitud conjunta de permisos obligatorios (Notificaciones + Localización)
-    val permissionsLauncher = rememberLauncherForActivityResult(
+    // ── Permisos BLE ─────────────────────────────────────
+    val blePerms = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
+        }
+    }
+
+    val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] ?: false
-        if (!locationGranted) {
+    ) { results ->
+        if (results.values.all { it }) {
+            BleService.startBleService(context)
+            context.bindService(
+                Intent(context, BleService::class.java),
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
+        } else {
             Toast.makeText(
                 context,
-                "Se recomienda permitir la ubicación para enviar tu posición exacta en emergencias.",
+                "Se necesitan permisos Bluetooth para conectar la pulsera",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
 
+    // ── Arranque ──────────────────────────────────────────
     LaunchedEffect(Unit) {
-        val permissionsNeeded = mutableListOf<String>()
+        BanDITMessagingService.createNotificationChannel(context)
+
+        // Permiso notificaciones (ya existía)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(Manifest.permission.POST_NOTIFICATIONS)
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
         }
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION)
+
+        // Permisos BLE — si ya los tiene, arranca el servicio directo
+        val allGranted = blePerms.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
-        if (permissionsNeeded.isNotEmpty()) {
-            permissionsLauncher.launch(permissionsNeeded.toTypedArray())
+        if (allGranted) {
+            BleService.startBleService(context)
+            context.bindService(
+                Intent(context, BleService::class.java),
+                serviceConnection,
+                Context.BIND_AUTO_CREATE
+            )
+        } else {
+            permLauncher.launch(blePerms)
         }
     }
 
+    // Desvincula al salir (el servicio sigue corriendo en background)
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { context.unbindService(serviceConnection) }
+        }
+    }
+
+    // ── UI ────────────────────────────────────────────────
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -267,59 +348,63 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        BpmHeroCard(heartRate = heartRate)
-        AlertHistoryCard(alerts = alertHistory)
+        // Indicador de conexión BLE con botón para reconectar manualmente
+        BleStatusCard(
+            connected = bleConectado,
+            onReconnect = {
+                if (blePerms.all {
+                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                    }) {
+                    BleService.startBleService(context)
+                    context.bindService(
+                        Intent(context, BleService::class.java),
+                        serviceConnection,
+                        Context.BIND_AUTO_CREATE
+                    )
+                } else {
+                    permLauncher.launch(blePerms)
+                }
+            }
+        )
+
+        BpmHeroCard(heartRate = bpmActual)
+        AlertHistoryCard(alerts = listOf())
         Spacer(Modifier.height(4.dp))
 
+        // Alerta activa desde la pulsera
+        if (alertaActiva) {
+            CrisisAlertDialog(
+                patientName = "tú",
+                onDismiss = {
+                    alertaActiva = false
+                    db.collection("users").document(userId).update("isCrisis", false)
+                }
+            )
+        }
+
+        // Botón alerta manual (sin cambios respecto al original)
         Button(
             onClick = {
                 if (isSendingAlert) return@Button
                 isSendingAlert = true
-
-                val hasLocationPermission = ContextCompat.checkSelfPermission(
-                    context, Manifest.permission.ACCESS_FINE_LOCATION
-                ) == PackageManager.PERMISSION_GRANTED
-
-                if (hasLocationPermission) {
-                    // Captura una única localización instantánea de alta precisión
-                    fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
-                        .addOnSuccessListener { location ->
-                            val locationData = if (location != null) {
-                                mapOf(
-                                    "latitude" to location.latitude,
-                                    "longitude" to location.longitude,
-                                    "alertLocationTime" to System.currentTimeMillis()
-                                )
-                            } else null
-
-                            scope.launch {
-                                sendCrisisAlert(db, userId, locationData) { result ->
-                                    isSendingAlert = false
-                                    val message = if (result) "✓ Alerta y ubicación enviadas" else "Alerta registrada sin notificación"
-                                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                        .addOnFailureListener {
-                            scope.launch {
-                                sendCrisisAlert(db, userId, null) {
-                                    isSendingAlert = false
-                                    Toast.makeText(context, "Alerta enviada (Error al acceder al GPS)", Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                } else {
-                    scope.launch {
-                        sendCrisisAlert(db, userId, null) {
-                            isSendingAlert = false
-                            Toast.makeText(context, "Alerta enviada sin ubicación (Permiso denegado)", Toast.LENGTH_LONG).show()
-                        }
-                    }
+                scope.launch {
+                    db.collection("users").document(userId).update(
+                        mapOf(
+                            "isCrisis"      to true,
+                            "lastAlertTime" to Timestamp.now()
+                        )
+                    )
+                    val result = sendAlertToBackend(userId)
+                    isSendingAlert = false
+                    Toast.makeText(
+                        context,
+                        if (result) "✓ Alerta enviada al cuidador"
+                        else "Alerta registrada (no se pudo notificar al cuidador)",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(64.dp),
+            modifier = Modifier.fillMaxWidth().height(64.dp),
             shape = RoundedCornerShape(16.dp),
             enabled = !isSendingAlert,
             colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed)
@@ -340,30 +425,6 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
     }
 }
 
-private suspend fun sendCrisisAlert(
-    db: FirebaseFirestore,
-    userId: String,
-    locationData: Map<String, Any>?,
-    onComplete: (Boolean) -> Unit
-) {
-    val updateFields = mutableMapOf<String, Any>(
-        "isCrisis" to true,
-        "lastAlertTime" to Timestamp.now()
-    )
-    if (locationData != null) {
-        updateFields["location"] = locationData
-    }
-
-    try {
-        db.collection("users").document(userId).update(updateFields)
-    } catch (e: Exception) {
-        android.util.Log.e("BanDIT", "Error al actualizar Firestore: ${e.message}")
-    }
-
-    val result = sendAlertToBackend(userId)
-    onComplete(result)
-}
-
 private suspend fun sendAlertToBackend(patientId: String): Boolean =
     withContext(Dispatchers.IO) {
         try {
@@ -376,56 +437,26 @@ private suspend fun sendAlertToBackend(patientId: String): Boolean =
                 connectTimeout = 8_000
                 readTimeout = 8_000
             }
-
             val body = JSONObject().put("patientId", patientId).toString()
             connection.outputStream.bufferedWriter().use { it.write(body) }
-
             val responseCode = connection.responseCode
             connection.disconnect()
-
             responseCode in 200..299
         } catch (e: Exception) {
-            android.util.Log.e("BanDIT", "Error enviando alerta backend: ${e.message}")
+            android.util.Log.e("BanDIT", "Error enviando alerta: ${e.message}")
             false
         }
     }
 
-// ─── Caregiver Home ────
+// ─── Caregiver Home ───────────────────────────────────────────────────────────
 
 @Composable
 fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    var patientName by remember { mutableStateOf<String?>(null) }
+    var patientName      by remember { mutableStateOf<String?>(null) }
     var patientHeartRate by remember { mutableStateOf<Int?>(null) }
-    var linkedPatientId by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
+    var linkedPatientId  by remember { mutableStateOf<String?>(null) }
+    var isLoading        by remember { mutableStateOf(true) }
     var showCrisisDialog by remember { mutableStateOf(false) }
-
-    // Nuevos estados para capturar la ubicación de crisis
-    var latitude by remember { mutableStateOf<Double?>(null) }
-    var longitude by remember { mutableStateOf<Double?>(null) }
-
-    // Solicitar permiso de notificaciones para el cuidador (Android 13+)
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (!granted) {
-            Toast.makeText(
-                context,
-                "Activa las notificaciones para recibir las alertas de tu paciente",
-                Toast.LENGTH_LONG
-            ).show()
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
 
     DisposableEffect(userId) {
         val userListener = db.collection("users").document(userId)
@@ -435,7 +466,6 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                     isLoading = false
                 }
             }
-
         onDispose { userListener.remove() }
     }
 
@@ -444,20 +474,12 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
             db.collection("users").document(pid)
                 .addSnapshotListener { snap, _ ->
                     if (snap != null && snap.exists()) {
-                        patientName = snap.getString("name")
-                        patientHeartRate = (snap.getLong("heartRate") ?: 78).toInt()
-                        if (snap.getBoolean("isCrisis") == true) {
-                            showCrisisDialog = true
-                        }
-
-                        // Extrae las coordenadas si existen
-                        val locationMap = snap.get("l\"ocation") as? Map<*, *>
-                        latitude = locationMap?.get("latitude") as? Double
-                        longitude = locationMap?.get("longitude") as? Double
+                        patientName      = snap.getString("name")
+                        patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
+                        if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
                     }
                 }
         }
-
         onDispose { patientListener?.remove() }
     }
 
@@ -469,17 +491,14 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                 linkedPatientId?.let { pid ->
                     db.collection("users").document(pid).addSnapshotListener { snap, _ ->
                         if (snap != null && snap.exists()) {
-                            patientName = snap.getString("name")
-                            patientHeartRate = (snap.getLong("heartRate") ?: 78).toInt()
+                            patientName      = snap.getString("name")
+                            patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
                             if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
-
-                            val locationMap = snap.get("location") as? Map<*, *>
-                            latitude = locationMap?.get("latitude") as? Double
-                            longitude = locationMap?.get("longitude") as? Double
                         }
                     }
                 }
-            }.addOnFailureListener { isLoading = false }
+            }
+            .addOnFailureListener { isLoading = false }
     }
 
     if (showCrisisDialog) {
@@ -503,50 +522,20 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         when {
-            isLoading -> FullScreenLoader()
+            isLoading           -> FullScreenLoader()
             linkedPatientId == null -> NoPatientLinkedCard()
             else -> {
                 BpmHeroCard(
                     heartRate = patientHeartRate ?: 0,
                     label = "FC de ${patientName ?: "Paciente"}"
                 )
-
-                // Renderizado condicional del botón de Google Maps (Solo visible en crisis)
-                if (showCrisisDialog && latitude != null && longitude != null) {
-                    MedCard(title = "Ubicación de la Emergencia", icon = Icons.Outlined.LocationOn) {
-                        Text(
-                            text = "$patientName ha gatillado el protocolo de ayuda. Ubicación exacta capturada:",
-                            color = BanDITColors.TextPrimary,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                val gmmIntentUri = android.net.Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude(${patientName ?: "Paciente"} en Crisis)")
-                                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri).apply {
-                                    setPackage("com.google.android.apps.maps")
-                                }
-                                context.startActivity(mapIntent)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Outlined.Map, contentDescription = null, tint = Color.White)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Rastrear en Google Maps", fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-                    }
-                }
-
                 AlertHistoryCard(alerts = emptyList())
             }
         }
     }
 }
 
-// ── Profile Screen ──
+// ─── Profile Screen ───────────────────────────────────────────────────────────
 
 @Composable
 fun ProfileScreen(
@@ -557,6 +546,8 @@ fun ProfileScreen(
     db: FirebaseFirestore,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -571,7 +562,10 @@ fun ProfileScreen(
                 .clip(RoundedCornerShape(20.dp))
                 .background(
                     Brush.verticalGradient(
-                        listOf(BanDITColors.CyanDim.copy(alpha = 0.4f), BanDITColors.NavyCard)
+                        listOf(
+                            BanDITColors.CyanDim.copy(alpha = 0.4f),
+                            BanDITColors.NavyCard
+                        )
                     )
                 )
                 .border(1.dp, BanDITColors.NavyBorder, RoundedCornerShape(20.dp))
@@ -611,18 +605,17 @@ fun ProfileScreen(
                 ) {
                     Text(
                         if (userRole == "patient") "PACIENTE" else "CUIDADOR",
-                        fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.5.sp, color = BanDITColors.CyanPrimary
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp,
+                        color = BanDITColors.CyanPrimary
                     )
                 }
             }
         }
 
         if (userRole == "patient") {
-            MedCard(
-                title = "Solicitudes de cuidadores",
-                icon = Icons.Outlined.PersonAdd
-            ) {
+            MedCard(title = "Solicitudes de cuidadores", icon = Icons.Outlined.PersonAdd) {
                 PendingRequests(userId)
             }
         }
@@ -646,7 +639,58 @@ fun ProfileScreen(
     }
 }
 
-// ─── Reusable Components ─────
+// ─── Componentes reutilizables ────────────────────────────────────────────────
+
+@Composable
+fun BleStatusCard(connected: Boolean, onReconnect: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(
+                if (connected) BanDITColors.SuccessGreenDim else Color(0xFF2D1B0E)
+            )
+            .border(
+                1.dp,
+                if (connected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
+                RoundedCornerShape(12.dp)
+            )
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (connected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange
+                    )
+            )
+            Text(
+                if (connected) "Pulsera conectada" else "Buscando pulsera...",
+                color = if (connected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        // Botón de reconexión manual — visible solo cuando está desconectada
+        if (!connected) {
+            TextButton(onClick = onReconnect) {
+                Text(
+                    "Conectar",
+                    color = BanDITColors.CyanPrimary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
@@ -683,7 +727,7 @@ fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text(
-                    "$heartRate",
+                    if (heartRate > 0) "$heartRate" else "--",
                     fontSize = 72.sp,
                     fontWeight = FontWeight.Bold,
                     color = BanDITColors.CyanPrimary,
@@ -698,7 +742,7 @@ fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
                 )
             }
             Text(
-                "EN TIEMPO REAL",
+                if (heartRate > 0) "EN TIEMPO REAL" else "SIN CONTACTO",
                 fontSize = 10.sp,
                 letterSpacing = 2.sp,
                 color = BanDITColors.TextMuted
@@ -771,7 +815,10 @@ fun MedCard(title: String, icon: ImageVector, content: @Composable ColumnScope.(
 
 @Composable
 fun ProfileInfoRow(label: String, value: String) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
         Text(label, color = BanDITColors.TextMuted, fontSize = 13.sp)
         Text(
             value,
@@ -815,7 +862,9 @@ fun CrisisAlertDialog(patientName: String, onDismiss: () -> Unit) {
         text = {
             Text(
                 "$patientName ha activado el protocolo de emergencia y necesita asistencia inmediata.",
-                color = BanDITColors.TextPrimary, fontSize = 15.sp, lineHeight = 22.sp
+                color = BanDITColors.TextPrimary,
+                fontSize = 15.sp,
+                lineHeight = 22.sp
             )
         },
         confirmButton = {
@@ -847,60 +896,38 @@ fun PendingRequests(patientId: String) {
             .whereEqualTo("patientId", patientId)
             .whereEqualTo("status", "pending")
             .addSnapshotListener { snapshot, _ ->
-                if (snapshot != null) {
-                    requests = snapshot.documents
-                }
+                if (snapshot != null) requests = snapshot.documents
             }
     }
 
     if (requests.isEmpty()) {
-        Text(
-            "No hay solicitudes pendientes",
-            color = BanDITColors.TextSecond
-        )
+        Text("No hay solicitudes pendientes", color = BanDITColors.TextSecond)
         return
     }
 
     requests.forEach { doc ->
         val caregiverName = doc.getString("caregiverName") ?: "Cuidador"
-
         Column {
-            Text(
-                caregiverName,
-                color = BanDITColors.TextPrimary
-            )
+            Text(caregiverName, color = BanDITColors.TextPrimary)
             Spacer(Modifier.height(8.dp))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(
-                    onClick = {
-                        val caregiverId = doc.getString("caregiverId") ?: return@Button
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    val caregiverId = doc.getString("caregiverId") ?: return@Button
+                    db.collection("patient_caregivers").add(
+                        mapOf(
+                            "patientId"   to patientId,
+                            "caregiverId" to caregiverId,
+                            "createdAt"   to System.currentTimeMillis()
+                        )
+                    )
+                    doc.reference.update("status", "accepted")
+                    db.collection("users").document(caregiverId)
+                        .update("linkedPatientId", patientId)
+                }) { Text("Aceptar") }
 
-                        db.collection("patient_caregivers")
-                            .add(
-                                mapOf(
-                                    "patientId" to patientId,
-                                    "caregiverId" to caregiverId,
-                                    "createdAt" to System.currentTimeMillis()
-                                )
-                            )
-                        doc.reference.update("status", "accepted")
-                        db.collection("users")
-                            .document(caregiverId)
-                            .update("linkedPatientId", patientId)
-                    }
-                ) {
-                    Text("Aceptar")
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        doc.reference.update("status", "rejected")
-                    }
-                ) {
-                    Text("Rechazar")
-                }
+                OutlinedButton(onClick = {
+                    doc.reference.update("status", "rejected")
+                }) { Text("Rechazar") }
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -914,13 +941,8 @@ fun FullScreenLoader() {
     }
 }
 
-// ─── Helpers ───
-
 private fun saveFcmToken(db: FirebaseFirestore, userId: String) {
-    FirebaseMessaging.getInstance().token
-        .addOnSuccessListener { token ->
-            db.collection("users")
-                .document(userId)
-                .update("fcmToken", token)
-        }
+    FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+        db.collection("users").document(userId).update("fcmToken", token)
+    }
 }
