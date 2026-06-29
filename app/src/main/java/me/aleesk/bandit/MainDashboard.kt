@@ -1,6 +1,7 @@
 package me.aleesk.bandit
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -33,6 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
@@ -117,8 +121,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                             )
                             .border(
                                 1.dp,
-                                if (!isConnected) BanDITColors.SuccessGreen
-                                else BanDITColors.WarnOrange,
+                                if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
                                 RoundedCornerShape(20.dp)
                             )
                             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -141,8 +144,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp,
-                                color = if (!isConnected) BanDITColors.SuccessGreen
-                                else BanDITColors.WarnOrange
+                                color = if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange
                             )
                         }
                     }
@@ -225,21 +227,24 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
 
 // ─── Patient Home ─────────────────────────────────────────────────────────────
 
-private const val BACKEND_URL = "http://192.168.1.81:3000"
+private const val BACKEND_URL = "https://bandit-backend-spp3.onrender.com"
 
+@SuppressLint("MissingPermission")
 @Composable
 fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
 
-    // ── Estado BLE ───────────────────────────────────────
+    // Estado BLE
     var bleConectado by remember { mutableStateOf(false) }
     var bpmActual    by remember { mutableStateOf(0) }
     var alertaActiva by remember { mutableStateOf(false) }
-
     var isSendingAlert by remember { mutableStateOf(false) }
 
-    // ── Conexión al ForegroundService ────────────────────
+    // Cliente de servicios de ubicación de Google
+    val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
+
+    // Conexión al ForegroundService
     val serviceConnection = remember {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
@@ -248,16 +253,30 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
                 svc.onBpmUpdate        = { bpm -> bpmActual = bpm }
                 svc.onAlertReceived    = { active ->
                     alertaActiva = active
-                    // Si la pulsera activa la alerta, también lo marcamos en Firestore
-                    // para que el cuidador reciba la notificación
                     if (active) {
-                        db.collection("users").document(userId).update(
-                            mapOf(
-                                "isCrisis"      to true,
-                                "lastAlertTime" to Timestamp.now()
-                            )
-                        )
-                        scope.launch { sendAlertToBackend(userId) }
+                        // Captura automática de ubicación desde el trigger de la pulsera
+                        val hasLocationPerm = ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.ACCESS_FINE_LOCATION
+                        ) == PackageManager.PERMISSION_GRANTED
+
+                        if (hasLocationPerm) {
+                            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                                .addOnSuccessListener { location ->
+                                    val locationData = location?.let {
+                                        mapOf(
+                                            "latitude" to it.latitude,
+                                            "longitude" to it.longitude,
+                                            "alertLocationTime" to System.currentTimeMillis()
+                                        )
+                                    }
+                                    scope.launch { sendCrisisAlert(db, userId, locationData) }
+                                }
+                                .addOnFailureListener {
+                                    scope.launch { sendCrisisAlert(db, userId, null) }
+                                }
+                        } else {
+                            scope.launch { sendCrisisAlert(db, userId, null) }
+                        }
                     } else {
                         db.collection("users").document(userId).update("isCrisis", false)
                     }
@@ -269,26 +288,29 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
         }
     }
 
-    // ── Permisos BLE ─────────────────────────────────────
-    val blePerms = remember {
+    // Unificación de todos los permisos requeridos por el Paciente (Ubicación, BLE y Notificaciones)
+    val requiredPerms = remember {
+        val perms = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(
-                Manifest.permission.BLUETOOTH_SCAN,
-                Manifest.permission.BLUETOOTH_CONNECT
-            )
+            perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
         } else {
-            arrayOf(
-                Manifest.permission.BLUETOOTH,
-                Manifest.permission.BLUETOOTH_ADMIN,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
+            perms.add(Manifest.permission.BLUETOOTH)
+            perms.add(Manifest.permission.BLUETOOTH_ADMIN)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        perms.toTypedArray()
     }
 
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
-        if (results.values.all { it }) {
+        if (results[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
             BleService.startBleService(context)
             context.bindService(
                 Intent(context, BleService::class.java),
@@ -298,26 +320,17 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
         } else {
             Toast.makeText(
                 context,
-                "Se necesitan permisos Bluetooth para conectar la pulsera",
+                "Se requieren permisos de ubicación y Bluetooth para operar los sistemas de seguridad.",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
 
-    // ── Arranque ──────────────────────────────────────────
+    // Arranque unificado
     LaunchedEffect(Unit) {
         BanDITMessagingService.createNotificationChannel(context)
 
-        // Permiso notificaciones (ya existía)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            permLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
-        }
-
-        // Permisos BLE — si ya los tiene, arranca el servicio directo
-        val allGranted = blePerms.all {
+        val allGranted = requiredPerms.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
         if (allGranted) {
@@ -328,18 +341,16 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
                 Context.BIND_AUTO_CREATE
             )
         } else {
-            permLauncher.launch(blePerms)
+            permLauncher.launch(requiredPerms)
         }
     }
 
-    // Desvincula al salir (el servicio sigue corriendo en background)
     DisposableEffect(Unit) {
         onDispose {
             runCatching { context.unbindService(serviceConnection) }
         }
     }
 
-    // ── UI ────────────────────────────────────────────────
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -348,13 +359,10 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Indicador de conexión BLE con botón para reconectar manualmente
         BleStatusCard(
             connected = bleConectado,
             onReconnect = {
-                if (blePerms.all {
-                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-                    }) {
+                if (requiredPerms.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) {
                     BleService.startBleService(context)
                     context.bindService(
                         Intent(context, BleService::class.java),
@@ -362,7 +370,7 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
                         Context.BIND_AUTO_CREATE
                     )
                 } else {
-                    permLauncher.launch(blePerms)
+                    permLauncher.launch(requiredPerms)
                 }
             }
         )
@@ -371,7 +379,6 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
         AlertHistoryCard(alerts = listOf())
         Spacer(Modifier.height(4.dp))
 
-        // Alerta activa desde la pulsera
         if (alertaActiva) {
             CrisisAlertDialog(
                 patientName = "tú",
@@ -382,26 +389,49 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
             )
         }
 
-        // Botón alerta manual (sin cambios respecto al original)
+        // Botón alerta manual con inyección de GPS instantáneo
         Button(
             onClick = {
                 if (isSendingAlert) return@Button
                 isSendingAlert = true
-                scope.launch {
-                    db.collection("users").document(userId).update(
-                        mapOf(
-                            "isCrisis"      to true,
-                            "lastAlertTime" to Timestamp.now()
-                        )
-                    )
-                    val result = sendAlertToBackend(userId)
-                    isSendingAlert = false
-                    Toast.makeText(
-                        context,
-                        if (result) "✓ Alerta enviada al cuidador"
-                        else "Alerta registrada (no se pudo notificar al cuidador)",
-                        Toast.LENGTH_LONG
-                    ).show()
+
+                val hasLocationPermission = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (hasLocationPermission) {
+                    fusedLocationClient.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null)
+                        .addOnSuccessListener { location ->
+                            val locationData = location?.let {
+                                mapOf(
+                                    "latitude" to it.latitude,
+                                    "longitude" to it.longitude,
+                                    "alertLocationTime" to System.currentTimeMillis()
+                                )
+                            }
+                            scope.launch {
+                                val result = sendCrisisAlert(db, userId, locationData)
+                                isSendingAlert = false
+                                Toast.makeText(
+                                    context,
+                                    if (result) "✓ Alerta y ubicación enviadas" else "Alerta registrada sin notificación push",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                        .addOnFailureListener {
+                            scope.launch {
+                                sendCrisisAlert(db, userId, null)
+                                isSendingAlert = false
+                                Toast.makeText(context, "Alerta enviada (Error de GPS)", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                } else {
+                    scope.launch {
+                        sendCrisisAlert(db, userId, null)
+                        isSendingAlert = false
+                        Toast.makeText(context, "Alerta enviada sin ubicación (Permiso denegado)", Toast.LENGTH_LONG).show()
+                    }
                 }
             },
             modifier = Modifier.fillMaxWidth().height(64.dp),
@@ -425,6 +455,26 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
     }
 }
 
+private suspend fun sendCrisisAlert(
+    db: FirebaseFirestore,
+    userId: String,
+    locationData: Map<String, Any>?
+): Boolean {
+    val updateFields = mutableMapOf<String, Any>(
+        "isCrisis"      to true,
+        "lastAlertTime" to Timestamp.now()
+    )
+    if (locationData != null) {
+        updateFields["location"] = locationData
+    }
+    try {
+        db.collection("users").document(userId).update(updateFields)
+    } catch (e: Exception) {
+        android.util.Log.e("BanDIT", "Error actualizando Firestore: ${e.message}")
+    }
+    return sendAlertToBackend(userId)
+}
+
 private suspend fun sendAlertToBackend(patientId: String): Boolean =
     withContext(Dispatchers.IO) {
         try {
@@ -443,7 +493,7 @@ private suspend fun sendAlertToBackend(patientId: String): Boolean =
             connection.disconnect()
             responseCode in 200..299
         } catch (e: Exception) {
-            android.util.Log.e("BanDIT", "Error enviando alerta: ${e.message}")
+            android.util.Log.e("BanDIT", "Error enviando alerta backend: ${e.message}")
             false
         }
     }
@@ -452,11 +502,38 @@ private suspend fun sendAlertToBackend(patientId: String): Boolean =
 
 @Composable
 fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     var patientName      by remember { mutableStateOf<String?>(null) }
     var patientHeartRate by remember { mutableStateOf<Int?>(null) }
     var linkedPatientId  by remember { mutableStateOf<String?>(null) }
     var isLoading        by remember { mutableStateOf(true) }
     var showCrisisDialog by remember { mutableStateOf(false) }
+
+    // Coordenadas de crisis en tiempo real
+    var latitude  by remember { mutableStateOf<Double?>(null) }
+    var longitude by remember { mutableStateOf<Double?>(null) }
+
+    // Solicitar permiso de notificaciones para el cuidador (Android 13+)
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) {
+            Toast.makeText(
+                context,
+                "Activa las notificaciones para recibir las alertas de tu paciente",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     DisposableEffect(userId) {
         val userListener = db.collection("users").document(userId)
@@ -477,6 +554,10 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                         patientName      = snap.getString("name")
                         patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
                         if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
+
+                        val locationMap = snap.get("location") as? Map<*, *>
+                        latitude = locationMap?.get("latitude") as? Double
+                        longitude = locationMap?.get("longitude") as? Double
                     }
                 }
         }
@@ -494,6 +575,10 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                             patientName      = snap.getString("name")
                             patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
                             if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
+
+                            val locationMap = snap.get("location") as? Map<*, *>
+                            latitude = locationMap?.get("latitude") as? Double
+                            longitude = locationMap?.get("longitude") as? Double
                         }
                     }
                 }
@@ -529,6 +614,36 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                     heartRate = patientHeartRate ?: 0,
                     label = "FC de ${patientName ?: "Paciente"}"
                 )
+
+                // Tarjeta de ubicación Dinámica (Solo visible en estados de Crisis confirmada)
+                if (showCrisisDialog && latitude != null && longitude != null) {
+                    MedCard(title = "Ubicación de la Emergencia", icon = Icons.Outlined.LocationOn) {
+                        Text(
+                            text = "$patientName ha gatillado una alerta activa. Posición geográfica recibida:",
+                            color = BanDITColors.TextPrimary,
+                            fontSize = 14.sp,
+                            lineHeight = 20.sp
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                val gmmIntentUri = android.net.Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude(${patientName ?: "Paciente"} en Crisis)")
+                                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri).apply {
+                                    setPackage("com.google.android.apps.maps")
+                                }
+                                context.startActivity(mapIntent)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Outlined.Map, contentDescription = null, tint = Color.White)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Rastrear en Google Maps", fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                }
+
                 AlertHistoryCard(alerts = emptyList())
             }
         }
@@ -546,8 +661,6 @@ fun ProfileScreen(
     db: FirebaseFirestore,
     modifier: Modifier = Modifier
 ) {
-    val context = LocalContext.current
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -678,7 +791,6 @@ fun BleStatusCard(connected: Boolean, onReconnect: () -> Unit) {
                 fontWeight = FontWeight.SemiBold
             )
         }
-        // Botón de reconexión manual — visible solo cuando está desconectada
         if (!connected) {
             TextButton(onClick = onReconnect) {
                 Text(
@@ -933,7 +1045,7 @@ fun PendingRequests(patientId: String) {
         Spacer(Modifier.height(12.dp))
     }
 }
-//a
+
 @Composable
 fun FullScreenLoader() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
