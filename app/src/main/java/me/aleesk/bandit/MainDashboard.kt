@@ -509,6 +509,9 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
     var isLoading        by remember { mutableStateOf(true) }
     var showCrisisDialog by remember { mutableStateOf(false) }
 
+    // Nuevo estado local para rastrear la crisis de forma independiente al Pop-up
+    var isCrisisActive   by remember { mutableStateOf(false) }
+
     // Coordenadas de crisis en tiempo real
     var latitude  by remember { mutableStateOf<Double?>(null) }
     var longitude by remember { mutableStateOf<Double?>(null) }
@@ -553,7 +556,13 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                     if (snap != null && snap.exists()) {
                         patientName      = snap.getString("name")
                         patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
-                        if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
+
+                        val crisisFromDb = snap.getBoolean("isCrisis") == true
+                        // Si empieza una nueva crisis, abrimos el Pop-up automáticamente
+                        if (crisisFromDb && !isCrisisActive) {
+                            showCrisisDialog = true
+                        }
+                        isCrisisActive = crisisFromDb
 
                         val locationMap = snap.get("location") as? Map<*, *>
                         latitude = locationMap?.get("latitude") as? Double
@@ -574,7 +583,12 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                         if (snap != null && snap.exists()) {
                             patientName      = snap.getString("name")
                             patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
-                            if (snap.getBoolean("isCrisis") == true) showCrisisDialog = true
+
+                            val crisisFromDb = snap.getBoolean("isCrisis") == true
+                            if (crisisFromDb && !isCrisisActive) {
+                                showCrisisDialog = true
+                            }
+                            isCrisisActive = crisisFromDb
 
                             val locationMap = snap.get("location") as? Map<*, *>
                             latitude = locationMap?.get("latitude") as? Double
@@ -590,10 +604,8 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
         CrisisAlertDialog(
             patientName = patientName ?: "el paciente",
             onDismiss = {
+                // Al presionar apagar alarma, SOLO cerramos el Pop-up visual.
                 showCrisisDialog = false
-                linkedPatientId?.let {
-                    db.collection("users").document(it).update("isCrisis", false)
-                }
             }
         )
     }
@@ -615,8 +627,8 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                     label = "FC de ${patientName ?: "Paciente"}"
                 )
 
-                // Tarjeta de ubicación Dinámica (Solo visible en estados de Crisis confirmada)
-                if (showCrisisDialog && latitude != null && longitude != null) {
+                // La tarjeta se mantendrá visible mientras dure la crisis en Firebase (hasta que el paciente la cancele)
+                if (isCrisisActive && latitude != null && longitude != null) {
                     MedCard(title = "Ubicación de la Emergencia", icon = Icons.Outlined.LocationOn) {
                         Text(
                             text = "$patientName ha gatillado una alerta activa. Posición geográfica recibida:",
