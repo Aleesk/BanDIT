@@ -33,6 +33,12 @@ import me.aleesk.bandit.MainActivity
 //  el flujo de permisos de la UI antes de bindear este servicio. El linter
 //  no reconoce esa validación custom, por eso se suprime aquí a nivel de
 //  clase — la app ya no podrá llegar a este código sin permisos concedidos.
+//
+//  Nota sobre reconexión: BleManager ahora cierra (close()) el GATT antes
+//  de invocar onConnectionChange(false), así que cuando este servicio recibe
+//  ese callback y llama startScan(), el GATT anterior ya está completamente
+//  liberado a nivel de sistema. Eso es lo que arregla el bug de "primera vez
+//  empareja, segunda vez no".
 // ============================================================
 
 private const val TAG             = "BleService"
@@ -106,6 +112,8 @@ class BleService : Service() {
                 // Reconexión automática: llamamos startScan() directamente
                 // en lugar de pasar por initBleManager() (que hace early-return
                 // si bleManager != null y nunca escanearía).
+                // Ahora es seguro: BleManager ya cerró el gatt anterior antes
+                // de llegar aquí, así que este startScan() no choca con él.
                 if (!connected) bleManager?.startScan()
             },
             onBpmUpdate = { bpm ->

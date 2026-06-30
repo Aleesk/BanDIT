@@ -25,7 +25,6 @@ private val CHAR_TX_UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E
 private val CHAR_RX_UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E") // write
 private val CCCD_UUID    = UUID.fromString("00002902-0000-1000-8000-00805F9B34FB") // descriptor notify
 
-//a
 class BleManager(
     private val context: Context,
     private val userId: String,
@@ -40,6 +39,10 @@ class BleManager(
 
     private var gatt: BluetoothGatt? = null
     private var rxChar: BluetoothGattCharacteristic? = null
+
+    // Evita doble disconnect/close en carreras de callbacks
+    @Volatile
+    private var isClosing: Boolean = false
 
     // ── Estado de conexión ────────────────────────────────
     var isConnected: Boolean = false
@@ -72,6 +75,7 @@ class BleManager(
             if (!hasPermissions()) return
             stopScan()
             Log.d(TAG, "Pulsera encontrada: ${result.device.address}")
+            // autoConnect = false: conexión directa, más rápida para reconexiones manuales
             result.device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
         }
 
@@ -108,20 +112,39 @@ class BleManager(
         @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (!hasPermissions()) return
+
+            // Log del status SIEMPRE — clave para diagnosticar fallos de bonding/caché.
+            // status 133 = GATT_ERROR genérico, muy común tras un bonding inválido
+            // o reconectar demasiado rápido sin haber cerrado el gatt anterior.
+            Log.d(TAG, "onConnectionStateChange status=$status newState=$newState")
+
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    if (status != BluetoothGatt.GATT_SUCCESS) {
+                        Log.e(TAG, "Conectado con status de error ($status) — cerrando y reintentando")
+                        cleanupGatt(gatt)
+                        onConnectionChange(false)
+                        return
+                    }
                     Log.d(TAG, "Conectado — descubriendo servicios")
+                    isClosing = false
                     isConnected = true
                     onConnectionChange(true)
+
+                    // Pequeño refresh de caché ANTES de discoverServices evita servir
+                    // una tabla de atributos vieja si el firmware del ESP32 cambió
+                    // (o si Android cacheó una sesión de bonding anterior corrupta).
+                    refreshGattCache(gatt)
                     gatt.discoverServices()
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    Log.d(TAG, "Desconectado")
-                    isConnected = false
-                    rxChar = null
+                    Log.d(TAG, "Desconectado (status=$status)")
+                    // IMPORTANTE: cerrar el gatt ANTES de avisar a onConnectionChange.
+                    // Si avisamos primero, BleService dispara startScan()/connectGatt()
+                    // de inmediato mientras el gatt viejo sigue "vivo" a nivel de
+                    // sistema — eso es lo que rompe el segundo intento de conexión.
+                    cleanupGatt(gatt)
                     onConnectionChange(false)
-                    gatt.close()
-                    this@BleManager.gatt = null
                 }
             }
         }
@@ -181,6 +204,37 @@ class BleManager(
         }
     }
 
+    // ── Limpieza centralizada del gatt ────────────────────
+    // Se usa tanto en desconexión normal como en errores de conexión.
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
+    private fun cleanupGatt(gattToClose: BluetoothGatt) {
+        if (isClosing) return
+        isClosing = true
+        isConnected = false
+        rxChar = null
+        try {
+            gattToClose.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error cerrando gatt: ${e.message}")
+        }
+        this.gatt = null
+    }
+
+    // Limpia la caché de servicios GATT vía reflection (no expuesto en API pública).
+    // Evita que Android sirva una tabla de atributos / claves de bonding obsoletas
+    // de una conexión anterior, causa frecuente de "primera vez funciona, segunda no".
+    private fun refreshGattCache(gatt: BluetoothGatt): Boolean {
+        return try {
+            val method = gatt.javaClass.getMethod("refresh")
+            val result = method.invoke(gatt) as Boolean
+            Log.d(TAG, "refreshGattCache() = $result")
+            result
+        } catch (e: Exception) {
+            Log.e(TAG, "No se pudo refrescar caché GATT: ${e.message}")
+            false
+        }
+    }
+
     // ── Parseo de mensajes entrantes ──────────────────────
     private fun handleIncoming(raw: String) {
         Log.d(TAG, "BLE RX: $raw")
@@ -237,6 +291,6 @@ class BleManager(
     fun disconnect() {
         if (!hasPermissions()) return
         stopScan()
-        gatt?.disconnect()
+        gatt?.let { cleanupGatt(it) }
     }
 }
