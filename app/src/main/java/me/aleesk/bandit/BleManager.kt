@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
 import android.util.Log
+import androidx.annotation.RequiresPermission
 import androidx.core.content.ContextCompat
 import com.google.firebase.firestore.FirebaseFirestore
 import org.json.JSONObject
@@ -77,6 +78,7 @@ class BleManager(
 
     // ── Scan ──────────────────────────────────────────────
     private val scanCallback = object : ScanCallback() {
+        @RequiresPermission(allOf = [Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN])
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             if (!hasPermissions()) return
             stopScan()
@@ -89,6 +91,7 @@ class BleManager(
         }
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun startScan() {
         if (!hasPermissions()) {
             Log.w(TAG, "Sin permisos BLE — no se puede escanear")
@@ -104,6 +107,7 @@ class BleManager(
         Log.d(TAG, "Escaneando pulsera...")
     }
 
+    @RequiresPermission(Manifest.permission.BLUETOOTH_SCAN)
     fun stopScan() {
         if (!hasPermissions()) return
         adapter?.bluetoothLeScanner?.stopScan(scanCallback)
@@ -112,6 +116,7 @@ class BleManager(
     // ── GATT callbacks ────────────────────────────────────
     private val gattCallback = object : BluetoothGattCallback() {
 
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (!hasPermissions()) return
             when (newState) {
@@ -132,6 +137,7 @@ class BleManager(
             }
         }
 
+        @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (!hasPermissions()) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -225,6 +231,7 @@ class BleManager(
     }
 
     // ── Envío de comandos a la pulsera (RX) ──────────────
+    @RequiresPermission(Manifest.permission.BLUETOOTH_CONNECT)
     fun sendCommand(cmd: String) {
         if (!hasPermissions() || !isConnected) return
         val char = rxChar ?: run {
@@ -237,6 +244,7 @@ class BleManager(
     }
 
     // ── Limpieza ──────────────────────────────────────────
+    @RequiresPermission(allOf = [Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN])
     fun disconnect() {
         if (!hasPermissions()) return
         stopScan()
