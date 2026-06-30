@@ -12,10 +12,6 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 
-/**
- * Permite usar `await()` sobre un Task de Firebase dentro de una función suspend,
- * sin necesidad de añadir la dependencia kotlinx-coroutines-play-services.
- */
 private suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { cont ->
     addOnSuccessListener { value -> cont.resume(value) }
     addOnFailureListener { exception -> cont.resumeWithException(exception) }
@@ -139,18 +135,18 @@ object AuthRepository {
 
             val patientDoc = matches.documents.first()
             val request = hashMapOf(
-                "caregiverId" to caregiverId,
                 "caregiverName" to caregiverName,
                 "caregiverEmail" to caregiverEmail,
-                "patientId" to patientDoc.id,
-                "patientEmail" to patientEmail,
                 "status" to "pending",
                 "createdAt" to System.currentTimeMillis()
             )
-            db.collection("caregiver_requests").add(request).awaitResult()
+            // Subcolección bajo el paciente — el ID del doc ES el caregiverId
+            db.collection("users").document(patientDoc.id)
+                .collection("caregivers").document(caregiverId)
+                .set(request)
+                .awaitResult()
         } catch (e: Exception) {
-            // No bloqueamos el registro si esto falla; el vínculo se puede
-            // reintentar luego desde el perfil del cuidador.
+            // Silencioso: el registro del cuidador no debe fallar por esto
         }
     }
 

@@ -38,20 +38,26 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.firebase.Timestamp
+import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.aleesk.bandit.service.BleService
+import me.aleesk.bandit.service.MessagingService
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Locale
 
-// ─── Navigation Tabs ──────────────────────────────────────────────────────────
+// ─── Navigation Tabs ─────
 
 enum class DashboardTab { HOME, PROFILE }
 
-// ─── Root Dashboard ───────────────────────────────────────────────────────────
+// ─── Root Dashboard ──────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +68,6 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
     var userName by remember { mutableStateOf("") }
     var userRole by remember { mutableStateOf("") }
     var userEmail by remember { mutableStateOf("") }
-    // Estado BLE real — lo actualizan las pantallas hijas a través de este callback
     var bleConectadoGlobal by remember { mutableStateOf(false) }
     var currentTab by remember { mutableStateOf(DashboardTab.HOME) }
 
@@ -81,21 +86,6 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 }
             }
         onDispose { listener.remove() }
-    }
-
-    LaunchedEffect(userId) {
-        db.collection("users").document(userId).get()
-            .addOnSuccessListener { doc ->
-                if (doc.exists()) {
-                    userName = doc.getString("name") ?: "Usuario"
-                    userRole = doc.getString("role") ?: "patient"
-                    userEmail = doc.getString("email").toString()
-                    saveFcmToken(db, userId)
-                }
-            }
-            .addOnFailureListener {
-                Toast.makeText(context, "Error al cargar datos", Toast.LENGTH_SHORT).show()
-            }
     }
 
     Scaffold(
@@ -203,6 +193,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
             currentTab == DashboardTab.HOME && userRole == "patient" ->
                 PatientHomeScreen(
                     userId = userId,
+                    userName = userName,
                     db = db,
                     onBleConnectionChange = { bleConectadoGlobal = it },
                     modifier = Modifier.padding(padding)
@@ -210,7 +201,9 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
             currentTab == DashboardTab.HOME && userRole == "caregiver" ->
                 CaregiverHomeScreen(
                     userId = userId,
+                    userName = userName,
                     db = db,
+                    onBleConnectionChange = { bleConectadoGlobal = it },
                     modifier = Modifier.padding(padding)
                 )
             currentTab == DashboardTab.PROFILE ->
@@ -226,7 +219,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
     }
 }
 
-// ─── Patient Home ─────────────────────────────────────────────────────────────
+// ─── Patient Home ─────
 
 private const val BACKEND_URL = "https://bandit-backend-spp3.onrender.com"
 
@@ -234,6 +227,7 @@ private const val BACKEND_URL = "https://bandit-backend-spp3.onrender.com"
 @Composable
 fun PatientHomeScreen(
     userId: String,
+    userName: String,
     db: FirebaseFirestore,
     onBleConnectionChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
@@ -246,6 +240,9 @@ fun PatientHomeScreen(
     var bpmActual    by remember { mutableStateOf(0) }
     var alertaActiva by remember { mutableStateOf(false) }
     var isSendingAlert by remember { mutableStateOf(false) }
+
+    // ID de la alerta actualmente activa (para poder resolverla por ID exacto)
+    var activeAlertId by remember { mutableStateOf<String?>(null) }
 
     // Cliente de servicios de ubicación de Google
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
@@ -262,13 +259,19 @@ fun PatientHomeScreen(
                 boundService = svc
                 svc.onConnectionChange = { connected ->
                     bleConectado = connected
-                    onBleConnectionChange(connected)   // propaga al TopAppBar
+                    onBleConnectionChange(connected)
+                    db.collection("users").document(userId)
+                        .update(
+                            mapOf(
+                                "bleConnected" to connected,
+                                "bleLastUpdate" to System.currentTimeMillis()
+                            )
+                        )
                 }
                 svc.onBpmUpdate        = { bpm -> bpmActual = bpm }
                 svc.onAlertReceived    = { active ->
                     alertaActiva = active
                     if (active) {
-                        // Captura automática de ubicación desde el trigger de la pulsera
                         val hasLocationPerm = ContextCompat.checkSelfPermission(
                             context, Manifest.permission.ACCESS_FINE_LOCATION
                         ) == PackageManager.PERMISSION_GRANTED
@@ -283,16 +286,19 @@ fun PatientHomeScreen(
                                             "alertLocationTime" to System.currentTimeMillis()
                                         )
                                     }
-                                    scope.launch { sendCrisisAlert(db, userId, locationData) }
+                                    scope.launch {
+                                        activeAlertId = sendCrisisAlert(db, userId, locationData)
+                                    }
                                 }
                                 .addOnFailureListener {
-                                    scope.launch { sendCrisisAlert(db, userId, null) }
+                                    scope.launch { activeAlertId = sendCrisisAlert(db, userId, null) }
                                 }
                         } else {
-                            scope.launch { sendCrisisAlert(db, userId, null) }
+                            scope.launch { activeAlertId = sendCrisisAlert(db, userId, null) }
                         }
                     } else {
-                        db.collection("users").document(userId).update("isCrisis", false)
+                        activeAlertId?.let { resolveSpecificAlert(db, userId, it, userId, userName) }
+                        activeAlertId = null
                     }
                 }
             }
@@ -303,7 +309,7 @@ fun PatientHomeScreen(
         }
     }
 
-    // Unificación de todos los permisos requeridos por el Paciente (Ubicación, BLE y Notificaciones)
+    // Permisos requeridos por el Paciente
     val requiredPerms = remember {
         val perms = mutableListOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
@@ -341,9 +347,8 @@ fun PatientHomeScreen(
         }
     }
 
-    // Arranque unificado
     LaunchedEffect(Unit) {
-        BanDITMessagingService.createNotificationChannel(context)
+        MessagingService.createNotificationChannel(context)
 
         val allGranted = requiredPerms.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
@@ -379,12 +384,10 @@ fun PatientHomeScreen(
             onReconnect = {
                 val svc = boundService
                 if (svc != null) {
-                    // Servicio ya bound → solo ordenar un nuevo escaneo
                     svc.iniciarEscaneo()
                 } else if (requiredPerms.all {
                         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
                     }) {
-                    // Servicio no bound todavía (raro, pero posible tras kill de proceso)
                     BleService.startBleService(context)
                     context.bindService(
                         Intent(context, BleService::class.java),
@@ -398,7 +401,11 @@ fun PatientHomeScreen(
         )
 
         BpmHeroCard(heartRate = bpmActual)
-        AlertHistoryCard(alerts = listOf())
+        AlertHistoryCard(
+            patientId = userId,
+            currentUserId = userId,
+            currentUserName = userName.ifBlank { "Paciente" }
+        )
         Spacer(Modifier.height(4.dp))
 
         if (alertaActiva) {
@@ -406,12 +413,12 @@ fun PatientHomeScreen(
                 patientName = "tú",
                 onDismiss = {
                     alertaActiva = false
-                    db.collection("users").document(userId).update("isCrisis", false)
+                    activeAlertId?.let { resolveSpecificAlert(db, userId, it, userId, userName) }
+                    activeAlertId = null
                 }
             )
         }
 
-        // Botón alerta manual con inyección de GPS instantáneo
         Button(
             onClick = {
                 if (isSendingAlert) return@Button
@@ -432,25 +439,26 @@ fun PatientHomeScreen(
                                 )
                             }
                             scope.launch {
-                                val result = sendCrisisAlert(db, userId, locationData)
+                                val newAlertId = sendCrisisAlert(db, userId, locationData)
+                                activeAlertId = newAlertId
                                 isSendingAlert = false
                                 Toast.makeText(
                                     context,
-                                    if (result) "✓ Alerta y ubicación enviadas" else "Alerta registrada sin notificación push",
+                                    if (newAlertId != null) "✓ Alerta y ubicación enviadas" else "Alerta registrada sin notificación push",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
                         }
                         .addOnFailureListener {
                             scope.launch {
-                                sendCrisisAlert(db, userId, null)
+                                activeAlertId = sendCrisisAlert(db, userId, null)
                                 isSendingAlert = false
                                 Toast.makeText(context, "Alerta enviada (Error de GPS)", Toast.LENGTH_LONG).show()
                             }
                         }
                 } else {
                     scope.launch {
-                        sendCrisisAlert(db, userId, null)
+                        activeAlertId = sendCrisisAlert(db, userId, null)
                         isSendingAlert = false
                         Toast.makeText(context, "Alerta enviada sin ubicación (Permiso denegado)", Toast.LENGTH_LONG).show()
                     }
@@ -477,11 +485,12 @@ fun PatientHomeScreen(
     }
 }
 
+/** Crea la alerta en Firestore, dispara el backend y devuelve el ID de la alerta creada (o null si falló). */
 private suspend fun sendCrisisAlert(
     db: FirebaseFirestore,
     userId: String,
     locationData: Map<String, Any>?
-): Boolean {
+): String? {
     val updateFields = mutableMapOf<String, Any>(
         "isCrisis"      to true,
         "lastAlertTime" to Timestamp.now()
@@ -497,7 +506,32 @@ private suspend fun sendCrisisAlert(
     return sendAlertToBackend(userId)
 }
 
-private suspend fun sendAlertToBackend(patientId: String): Boolean =
+/** Marca una alerta puntual (por ID) como resuelta, dejando registro de quién y cuándo. */
+private fun resolveSpecificAlert(
+    db: FirebaseFirestore,
+    patientId: String,
+    alertId: String,
+    attendedByUid: String,
+    attendedByName: String
+) {
+    db.collection("users").document(patientId)
+        .collection("alerts").document(alertId)
+        .update(
+            mapOf(
+                "resolvedAt" to Timestamp.now(),
+                "attendedBy" to attendedByUid,
+                "attendedByName" to attendedByName.ifBlank { "Usuario" }
+            )
+        )
+        .addOnFailureListener { e ->
+            android.util.Log.e("BanDIT", "Error marcando alerta atendida: ${e.message}", e)
+        }
+
+    db.collection("users").document(patientId).update("isCrisis", false)
+}
+
+/** Envía la alerta al backend y devuelve el alertId que crea, o null si la llamada falló. */
+private suspend fun sendAlertToBackend(patientId: String): String? =
     withContext(Dispatchers.IO) {
         try {
             val url = URL("$BACKEND_URL/sendAlert")
@@ -512,33 +546,38 @@ private suspend fun sendAlertToBackend(patientId: String): Boolean =
             val body = JSONObject().put("patientId", patientId).toString()
             connection.outputStream.bufferedWriter().use { it.write(body) }
             val responseCode = connection.responseCode
+            val responseText = if (responseCode in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else null
             connection.disconnect()
-            responseCode in 200..299
+
+            if (responseText != null) {
+                JSONObject(responseText).optString("alertId", null.toString()).takeIf { it.isNotBlank() && it != "null" }
+            } else null
         } catch (e: Exception) {
             android.util.Log.e("BanDIT", "Error enviando alerta backend: ${e.message}")
-            false
+            null
         }
     }
 
 // ─── Caregiver Home ───────────────────────────────────────────────────────────
 
 @Composable
-fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
+fun CaregiverHomeScreen(
+    userId: String,
+    userName: String,
+    db: FirebaseFirestore,
+    onBleConnectionChange: (Boolean) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     var patientName      by remember { mutableStateOf<String?>(null) }
     var patientHeartRate by remember { mutableStateOf<Int?>(null) }
     var linkedPatientId  by remember { mutableStateOf<String?>(null) }
     var isLoading        by remember { mutableStateOf(true) }
     var showCrisisDialog by remember { mutableStateOf(false) }
-
-    // Nuevo estado local para rastrear la crisis de forma independiente al Pop-up
     var isCrisisActive   by remember { mutableStateOf(false) }
 
-    // Coordenadas de crisis en tiempo real
-    var latitude  by remember { mutableStateOf<Double?>(null) }
-    var longitude by remember { mutableStateOf<Double?>(null) }
-
-    // Solicitar permiso de notificaciones para el cuidador (Android 13+)
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -571,6 +610,8 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
         onDispose { userListener.remove() }
     }
 
+    // Solo escucha isCrisis para notificar visualmente — el detalle y la
+    // resolución viven en el historial de alertas (un solo lugar de verdad).
     DisposableEffect(linkedPatientId) {
         val patientListener = linkedPatientId?.let { pid ->
             db.collection("users").document(pid)
@@ -578,57 +619,24 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                     if (snap != null && snap.exists()) {
                         patientName      = snap.getString("name")
                         patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
+                        onBleConnectionChange(snap.getBoolean("bleConnected") == true)
 
                         val crisisFromDb = snap.getBoolean("isCrisis") == true
-                        // Si empieza una nueva crisis, abrimos el Pop-up automáticamente
-                        if (crisisFromDb && !isCrisisActive) {
-                            showCrisisDialog = true
-                        }
+                        if (crisisFromDb && !isCrisisActive) showCrisisDialog = true
                         isCrisisActive = crisisFromDb
-
-                        val locationMap = snap.get("location") as? Map<*, *>
-                        latitude = locationMap?.get("latitude") as? Double
-                        longitude = locationMap?.get("longitude") as? Double
                     }
                 }
         }
-        onDispose { patientListener?.remove() }
-    }
-
-    LaunchedEffect(userId) {
-        db.collection("users").document(userId).get()
-            .addOnSuccessListener { doc ->
-                linkedPatientId = doc.getString("linkedPatientId")
-                isLoading = false
-                linkedPatientId?.let { pid ->
-                    db.collection("users").document(pid).addSnapshotListener { snap, _ ->
-                        if (snap != null && snap.exists()) {
-                            patientName      = snap.getString("name")
-                            patientHeartRate = (snap.getLong("heartRate") ?: 0).toInt()
-
-                            val crisisFromDb = snap.getBoolean("isCrisis") == true
-                            if (crisisFromDb && !isCrisisActive) {
-                                showCrisisDialog = true
-                            }
-                            isCrisisActive = crisisFromDb
-
-                            val locationMap = snap.get("location") as? Map<*, *>
-                            latitude = locationMap?.get("latitude") as? Double
-                            longitude = locationMap?.get("longitude") as? Double
-                        }
-                    }
-                }
-            }
-            .addOnFailureListener { isLoading = false }
+        onDispose {
+            patientListener?.remove()
+            onBleConnectionChange(false)
+        }
     }
 
     if (showCrisisDialog) {
         CrisisAlertDialog(
             patientName = patientName ?: "el paciente",
-            onDismiss = {
-                // Al presionar apagar alarma, SOLO cerramos el Pop-up visual.
-                showCrisisDialog = false
-            }
+            onDismiss = { showCrisisDialog = false }
         )
     }
 
@@ -649,36 +657,11 @@ fun CaregiverHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifie
                     label = "FC de ${patientName ?: "Paciente"}"
                 )
 
-                // La tarjeta se mantendrá visible mientras dure la crisis en Firebase (hasta que el paciente la cancele)
-                if (isCrisisActive && latitude != null && longitude != null) {
-                    MedCard(title = "Ubicación de la Emergencia", icon = Icons.Outlined.LocationOn) {
-                        Text(
-                            text = "$patientName ha gatillado una alerta activa. Posición geográfica recibida:",
-                            color = BanDITColors.TextPrimary,
-                            fontSize = 14.sp,
-                            lineHeight = 20.sp
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                val gmmIntentUri = android.net.Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude(${patientName ?: "Paciente"} en Crisis)")
-                                val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri).apply {
-                                    setPackage("com.google.android.apps.maps")
-                                }
-                                context.startActivity(mapIntent)
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Outlined.Map, contentDescription = null, tint = Color.White)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Rastrear en Google Maps", fontWeight = FontWeight.Bold, color = Color.White)
-                        }
-                    }
-                }
-
-                AlertHistoryCard(alerts = emptyList())
+                AlertHistoryCard(
+                    patientId = linkedPatientId!!,
+                    currentUserId = userId,
+                    currentUserName = userName.ifBlank { "Cuidador" }
+                )
             }
         }
     }
@@ -897,32 +880,204 @@ fun BpmHeroCard(heartRate: Int, label: String = "Frecuencia Cardíaca") {
     }
 }
 
+// ─── Historial de Alertas (fuente única de verdad) ─────────────────────────────
+
 @Composable
-fun AlertHistoryCard(alerts: List<String>) {
+fun AlertHistoryCard(patientId: String, currentUserId: String, currentUserName: String) {
+    val db = FirebaseFirestore.getInstance()
+    var alerts by remember { mutableStateOf<List<DocumentSnapshot>>(emptyList()) }
+    var selectedAlert by remember { mutableStateOf<DocumentSnapshot?>(null) }
+
+    LaunchedEffect(patientId) {
+        db.collection("users").document(patientId)
+            .collection("alerts")
+            .orderBy("triggeredAt", Query.Direction.DESCENDING)
+            .limit(20)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    android.util.Log.e("BanDIT", "Error leyendo alertas: ${error.message}", error)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null) alerts = snapshot.documents
+            }
+    }
+
     MedCard(title = "Historial de Alertas", icon = Icons.Outlined.Notifications) {
         if (alerts.isEmpty()) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Icon(
-                    Icons.Outlined.CheckCircle,
-                    contentDescription = null,
-                    tint = BanDITColors.SuccessGreen,
-                    modifier = Modifier.size(20.dp)
-                )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = BanDITColors.SuccessGreen, modifier = Modifier.size(20.dp))
                 Text("Sin alertas recientes", color = BanDITColors.TextSecond, fontSize = 14.sp)
             }
         } else {
-            alerts.forEach { alert ->
-                Text(
-                    "• $alert",
-                    color = BanDITColors.TextPrimary,
-                    fontSize = 14.sp,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                )
+            alerts.forEach { doc ->
+                val date = doc.getTimestamp("triggeredAt")?.toDate()
+                val resolved = doc.getTimestamp("resolvedAt") != null
+                val dateStr = date?.let { SimpleDateFormat("dd/MM HH:mm", Locale("es")).format(it) } ?: "—"
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selectedAlert = doc }
+                        .padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("• Alerta del $dateStr", color = BanDITColors.TextPrimary, fontSize = 13.sp)
+                    Text(
+                        if (resolved) "Atendida" else "Activa",
+                        color = if (resolved) BanDITColors.SuccessGreen else BanDITColors.AlertRed,
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
+    }
+
+    selectedAlert?.let { doc ->
+        AlertDetailDialog(
+            alertDoc = doc,
+            patientId = patientId,
+            currentUserId = currentUserId,
+            currentUserName = currentUserName,
+            canDelete = currentUserId == patientId,   // 👈 solo el paciente puede borrar
+            onDismiss = { selectedAlert = null }
+        )
+    }
+}
+
+@Composable
+fun AlertDetailDialog(
+    alertDoc: DocumentSnapshot,
+    patientId: String,
+    currentUserId: String,
+    currentUserName: String,
+    canDelete: Boolean,           // 👈 nuevo: true solo si currentUserId == patientId
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val db = FirebaseFirestore.getInstance()
+
+    val resolved = alertDoc.getTimestamp("resolvedAt") != null
+    val attendedByName = alertDoc.getString("attendedByName")
+    val triggeredDate = alertDoc.getTimestamp("triggeredAt")?.toDate()
+    val resolvedDate = alertDoc.getTimestamp("resolvedAt")?.toDate()
+    val fmt = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("es"))
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    val locationMap = alertDoc.get("location") as? Map<*, *>
+    val latitude = locationMap?.get("latitude") as? Double
+    val longitude = locationMap?.get("longitude") as? Double
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BanDITColors.NavyCard,
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Text(
+                if (resolved) "Alerta Atendida" else "Alerta Activa",
+                color = if (resolved) BanDITColors.SuccessGreen else BanDITColors.AlertRed,
+                fontWeight = FontWeight.Bold, fontSize = 18.sp
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Activada: ${triggeredDate?.let { fmt.format(it) } ?: "—"}", color = BanDITColors.TextPrimary, fontSize = 14.sp)
+                if (resolved) {
+                    Text("Atendida: ${resolvedDate?.let { fmt.format(it) } ?: "—"}", color = BanDITColors.TextPrimary, fontSize = 14.sp)
+                    Text("Por: ${attendedByName ?: "—"}", color = BanDITColors.TextPrimary, fontSize = 14.sp)
+                }
+                if (latitude != null && longitude != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Button(
+                        onClick = {
+                            val gmmIntentUri = android.net.Uri.parse("geo:$latitude,$longitude?q=$latitude,$longitude")
+                            val mapIntent = Intent(Intent.ACTION_VIEW, gmmIntentUri).apply {
+                                setPackage("com.google.android.apps.maps")
+                            }
+                            context.startActivity(mapIntent)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.CyanMuted),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Map, contentDescription = null, tint = Color.White)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Ver ubicación en Maps", color = Color.White)
+                    }
+                } else {
+                    Text("Sin ubicación registrada", color = BanDITColors.TextMuted, fontSize = 13.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!resolved) {
+                    Button(
+                        onClick = {
+                            resolveSpecificAlert(db, patientId, alertDoc.id, currentUserId, currentUserName)
+                            onDismiss()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("ATENDER", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                }
+                if (canDelete) {
+                    OutlinedButton(
+                        onClick = { showDeleteConfirm = true },
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Borrar", fontSize = 13.sp)
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cerrar", color = BanDITColors.CyanPrimary)
+            }
+        }
+    )
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            containerColor = BanDITColors.NavyCard,
+            title = {
+                Text(
+                    "¿Borrar esta alerta?",
+                    color = BanDITColors.TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = { Text("Esta acción no se puede deshacer.", color = BanDITColors.TextSecond) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        db.collection("users").document(patientId)
+                            .collection("alerts").document(alertDoc.id)
+                            .delete()
+                            .addOnFailureListener { e ->
+                                android.util.Log.e(
+                                    "BanDIT",
+                                    "Error borrando alerta: ${e.message}",
+                                    e
+                                )
+                            }
+                        showDeleteConfirm = false
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed)
+                ) { Text("Borrar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancelar", color = BanDITColors.CyanPrimary)
+                }
+            }
+        )
     }
 }
 
@@ -1007,7 +1162,7 @@ fun CrisisAlertDialog(patientName: String, onDismiss: () -> Unit) {
         },
         text = {
             Text(
-                "$patientName ha activado el protocolo de emergencia y necesita asistencia inmediata.",
+                "$patientName ha activado el protocolo de emergencia y necesita asistencia inmediata. Revisa el historial de alertas para ver la ubicación y marcarla como atendida.",
                 color = BanDITColors.TextPrimary,
                 fontSize = 15.sp,
                 lineHeight = 22.sp
@@ -1020,7 +1175,7 @@ fun CrisisAlertDialog(patientName: String, onDismiss: () -> Unit) {
                 colors = ButtonDefaults.buttonColors(containerColor = BanDITColors.AlertRed)
             ) {
                 Text(
-                    "ATENDER / APAGAR ALARMA",
+                    "ENTENDIDO",
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,
                     letterSpacing = 0.5.sp
@@ -1033,13 +1188,11 @@ fun CrisisAlertDialog(patientName: String, onDismiss: () -> Unit) {
 @Composable
 fun PendingRequests(patientId: String) {
     val db = FirebaseFirestore.getInstance()
-    var requests by remember {
-        mutableStateOf<List<com.google.firebase.firestore.DocumentSnapshot>>(emptyList())
-    }
+    var requests by remember { mutableStateOf<List<DocumentSnapshot>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        db.collection("caregiver_requests")
-            .whereEqualTo("patientId", patientId)
+        db.collection("users").document(patientId)
+            .collection("caregivers")
             .whereEqualTo("status", "pending")
             .addSnapshotListener { snapshot, _ ->
                 if (snapshot != null) requests = snapshot.documents
@@ -1053,26 +1206,23 @@ fun PendingRequests(patientId: String) {
 
     requests.forEach { doc ->
         val caregiverName = doc.getString("caregiverName") ?: "Cuidador"
+        val caregiverId = doc.id
         Column {
             Text(caregiverName, color = BanDITColors.TextPrimary)
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
-                    val caregiverId = doc.getString("caregiverId") ?: return@Button
-                    db.collection("patient_caregivers").add(
-                        mapOf(
-                            "patientId"   to patientId,
-                            "caregiverId" to caregiverId,
-                            "createdAt"   to System.currentTimeMillis()
-                        )
+                    doc.reference.update(
+                        mapOf("status" to "accepted", "respondedAt" to System.currentTimeMillis())
                     )
-                    doc.reference.update("status", "accepted")
                     db.collection("users").document(caregiverId)
                         .update("linkedPatientId", patientId)
                 }) { Text("Aceptar") }
 
                 OutlinedButton(onClick = {
-                    doc.reference.update("status", "rejected")
+                    doc.reference.update(
+                        mapOf("status" to "rejected", "respondedAt" to System.currentTimeMillis())
+                    )
                 }) { Text("Rechazar") }
             }
         }

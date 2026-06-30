@@ -8,6 +8,7 @@ import androidx.compose.runtime.*
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
+import me.aleesk.bandit.service.MessagingService
 
 class MainActivity : ComponentActivity() {
 
@@ -17,7 +18,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         auth = FirebaseAuth.getInstance()
 
-        BanDITMessagingService.createNotificationChannel(this)
+        MessagingService.createNotificationChannel(this)
 
         setContent {
             BanDITTheme {

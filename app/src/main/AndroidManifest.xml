@@ -50,7 +50,7 @@
         </activity>
 
         <service
-            android:name=".BanDITMessagingService"
+            android:name=".service.MessagingService"
             android:exported="false">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
@@ -58,7 +58,7 @@
         </service>
 
         <service
-            android:name=".BleService"
+            android:name=".service.BleService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 

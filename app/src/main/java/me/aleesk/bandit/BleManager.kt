@@ -17,17 +17,6 @@ import com.google.firebase.firestore.FirebaseFirestore
 import org.json.JSONObject
 import java.util.UUID
 
-// ============================================================
-//  BleManager — Pulsera Disautonomia ↔ BanDIT
-//
-//  Protocolo (Nordic UART Service):
-//    Notify  (TX de la pulsera): JSON con vitales o alerta
-//    Write   (RX de la pulsera): comandos de texto plano
-//
-//  JSON vitales  (cada ~1s):  {"bpm": 72}
-//  JSON alerta   (on-event):  {"alert": 1} = activa  |  {"alert": 0} = cancelada
-// ============================================================
-
 private const val TAG = "BleManager"
 
 // UUIDs — deben coincidir exactamente con config.h de la pulsera

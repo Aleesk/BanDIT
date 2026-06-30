@@ -1,5 +1,6 @@
-package me.aleesk.bandit
+package me.aleesk.bandit.service
 
+import android.R
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -13,6 +14,8 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import me.aleesk.bandit.BleManager
+import me.aleesk.bandit.MainActivity
 
 // ============================================================
 //  BleService — ForegroundService que mantiene la conexión BLE
@@ -84,8 +87,8 @@ class BleService : Service() {
 
         bleManager = BleManager(
             context = applicationContext,
-            userId  = userId,
-            db      = FirebaseFirestore.getInstance(),
+            userId = userId,
+            db = FirebaseFirestore.getInstance(),
             onConnectionChange = { connected ->
                 updateNotification(
                     if (connected) "Pulsera conectada" else "Buscando pulsera..."
@@ -146,7 +149,7 @@ class BleService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("BanDIT")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_dialog_info)
             .setContentIntent(openApp)
             .setOngoing(true)
             .setSilent(true)
