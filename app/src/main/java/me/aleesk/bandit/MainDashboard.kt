@@ -802,7 +802,7 @@ fun BleStatusCard(connected: Boolean, onReconnect: () -> Unit) {
                     )
             )
             Text(
-                if (connected) "Pulsera conectada" else "Buscando pulsera...",
+                if (connected) "BanDIT conectado" else "Buscando BanDIT...",
                 color = if (connected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.SemiBold

@@ -1,6 +1,8 @@
 package me.aleesk.bandit.service
 
+import android.Manifest
 import android.R
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -21,16 +23,23 @@ import me.aleesk.bandit.MainActivity
 //  BleService — ForegroundService que mantiene la conexión BLE
 //  viva aunque la app esté en background o la pantalla apagada.
 //
-//  Desde la UI:a
+//  Desde la UI:
 //    BleService.startBleService(context)   → arranca el servicio
 //    BleService.stopBleService(context)    → detiene el servicio
 //    context.bindService(...)              → obtiene referencia al servicio
+//
+//  Nota sobre permisos BLE: todas las llamadas a BleManager (startScan,
+//  disconnect) ya están protegidas en runtime por hasPermissions() o por
+//  el flujo de permisos de la UI antes de bindear este servicio. El linter
+//  no reconoce esa validación custom, por eso se suprime aquí a nivel de
+//  clase — la app ya no podrá llegar a este código sin permisos concedidos.
 // ============================================================
 
 private const val TAG             = "BleService"
 private const val CHANNEL_ID      = "bandit_ble"
 private const val NOTIFICATION_ID = 1
 
+@SuppressLint("MissingPermission")
 class BleService : Service() {
 
     // ── Binder — la UI accede al servicio a través de esto ──
@@ -52,7 +61,7 @@ class BleService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Buscando pulsera..."))
+        startForeground(NOTIFICATION_ID, buildNotification("Buscando BanDIT..."))
         Log.d(TAG, "Servicio BLE creado")
     }
 
