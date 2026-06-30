@@ -91,7 +91,9 @@ class BleService : Service() {
                     if (connected) "Pulsera conectada" else "Buscando pulsera..."
                 )
                 onConnectionChange?.invoke(connected)
-                // Reconexión automática al desconectarse
+                // Reconexión automática: llamamos startScan() directamente
+                // en lugar de pasar por initBleManager() (que hace early-return
+                // si bleManager != null y nunca escanearía).
                 if (!connected) bleManager?.startScan()
             },
             onBpmUpdate = { bpm ->
@@ -109,10 +111,16 @@ class BleService : Service() {
         }
     }
 
-    // Llamado desde PatientHomeScreen cuando se conceden los permisos en runtime
+    // Llamado desde PatientHomeScreen cuando el usuario pulsa "Reconectar"
+    // o cuando se conceden los permisos en runtime.
+    // Siempre llama startScan() si hay permisos, sin importar si bleManager
+    // ya existe — evita el early-return de initBleManager() que silenciaba la reconexión.
     fun iniciarEscaneo() {
-        if (bleManager == null) initBleManager()
-        else if (bleManager!!.hasPermissions()) bleManager!!.startScan()
+        if (bleManager == null) {
+            initBleManager()   // crea el manager Y lanza el scan
+        } else if (bleManager!!.hasPermissions()) {
+            bleManager!!.startScan()   // manager ya existe → solo escanear
+        }
     }
 
     // ── Notificación persistente ──────────────────────────

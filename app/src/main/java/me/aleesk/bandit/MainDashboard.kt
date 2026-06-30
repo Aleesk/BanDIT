@@ -62,7 +62,8 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
     var userName by remember { mutableStateOf("") }
     var userRole by remember { mutableStateOf("") }
     var userEmail by remember { mutableStateOf("") }
-    var isConnected by remember { mutableStateOf(false) }
+    // Estado BLE real — lo actualizan las pantallas hijas a través de este callback
+    var bleConectadoGlobal by remember { mutableStateOf(false) }
     var currentTab by remember { mutableStateOf(DashboardTab.HOME) }
 
     DisposableEffect(userId) {
@@ -76,7 +77,6 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                     userName = snapshot.getString("name") ?: "Usuario"
                     userRole = snapshot.getString("role") ?: "patient"
                     userEmail = snapshot.getString("email") ?: ""
-                    isConnected = !snapshot.metadata.isFromCache
                     saveFcmToken(db, userId)
                 }
             }
@@ -116,12 +116,12 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
                             .background(
-                                if (!isConnected) BanDITColors.SuccessGreenDim
+                                if (bleConectadoGlobal) BanDITColors.SuccessGreenDim
                                 else Color(0xFF2D1B0E)
                             )
                             .border(
                                 1.dp,
-                                if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
+                                if (bleConectadoGlobal) BanDITColors.SuccessGreen else BanDITColors.WarnOrange,
                                 RoundedCornerShape(20.dp)
                             )
                             .padding(horizontal = 12.dp, vertical = 6.dp)
@@ -135,16 +135,16 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                                     .size(7.dp)
                                     .clip(CircleShape)
                                     .background(
-                                        if (!isConnected) BanDITColors.SuccessGreen
+                                        if (bleConectadoGlobal) BanDITColors.SuccessGreen
                                         else BanDITColors.WarnOrange
                                     )
                             )
                             Text(
-                                if (!isConnected) "CONECTADO" else "DESCONECTADO",
+                                if (bleConectadoGlobal) "CONECTADO" else "DESCONECTADO",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 letterSpacing = 1.sp,
-                                color = if (!isConnected) BanDITColors.SuccessGreen else BanDITColors.WarnOrange
+                                color = if (bleConectadoGlobal) BanDITColors.SuccessGreen else BanDITColors.WarnOrange
                             )
                         }
                     }
@@ -204,6 +204,7 @@ fun MainDashboard(userId: String, onLogout: () -> Unit) {
                 PatientHomeScreen(
                     userId = userId,
                     db = db,
+                    onBleConnectionChange = { bleConectadoGlobal = it },
                     modifier = Modifier.padding(padding)
                 )
             currentTab == DashboardTab.HOME && userRole == "caregiver" ->
@@ -231,7 +232,12 @@ private const val BACKEND_URL = "https://bandit-backend-spp3.onrender.com"
 
 @SuppressLint("MissingPermission")
 @Composable
-fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier = Modifier) {
+fun PatientHomeScreen(
+    userId: String,
+    db: FirebaseFirestore,
+    onBleConnectionChange: (Boolean) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val scope   = rememberCoroutineScope()
 
@@ -244,12 +250,20 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
     // Cliente de servicios de ubicación de Google
     val fusedLocationClient = remember { LocationServices.getFusedLocationProviderClient(context) }
 
+    // Referencia al servicio bound — necesaria para llamar iniciarEscaneo()
+    // desde el botón de reconexión sin hacer un bindService() duplicado.
+    var boundService by remember { mutableStateOf<BleService?>(null) }
+
     // Conexión al ForegroundService
     val serviceConnection = remember {
         object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                 val svc = (binder as BleService.LocalBinder).service
-                svc.onConnectionChange = { connected -> bleConectado = connected }
+                boundService = svc
+                svc.onConnectionChange = { connected ->
+                    bleConectado = connected
+                    onBleConnectionChange(connected)   // propaga al TopAppBar
+                }
                 svc.onBpmUpdate        = { bpm -> bpmActual = bpm }
                 svc.onAlertReceived    = { active ->
                     alertaActiva = active
@@ -284,6 +298,7 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
             }
             override fun onServiceDisconnected(name: ComponentName) {
                 bleConectado = false
+                boundService = null
             }
         }
     }
@@ -362,7 +377,14 @@ fun PatientHomeScreen(userId: String, db: FirebaseFirestore, modifier: Modifier 
         BleStatusCard(
             connected = bleConectado,
             onReconnect = {
-                if (requiredPerms.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }) {
+                val svc = boundService
+                if (svc != null) {
+                    // Servicio ya bound → solo ordenar un nuevo escaneo
+                    svc.iniciarEscaneo()
+                } else if (requiredPerms.all {
+                        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                    }) {
+                    // Servicio no bound todavía (raro, pero posible tras kill de proceso)
                     BleService.startBleService(context)
                     context.bindService(
                         Intent(context, BleService::class.java),

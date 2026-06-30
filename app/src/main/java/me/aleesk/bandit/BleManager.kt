@@ -163,12 +163,25 @@ class BleManager(
             this@BleManager.gatt = gatt
         }
 
+        // Android ≤ 12 (API 31)
+        @Deprecated("Replaced by the 3-arg override on API 33+", ReplaceWith(""))
         override fun onCharacteristicChanged(
             gatt: BluetoothGatt,
             characteristic: BluetoothGattCharacteristic
         ) {
             if (characteristic.uuid != CHAR_TX_UUID) return
             val raw = characteristic.value?.toString(Charsets.UTF_8) ?: return
+            handleIncoming(raw)
+        }
+
+        // Android 13+ (API 33) — el sistema llama ESTE, no el de arriba
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            if (characteristic.uuid != CHAR_TX_UUID) return
+            val raw = value.toString(Charsets.UTF_8)
             handleIncoming(raw)
         }
     }
