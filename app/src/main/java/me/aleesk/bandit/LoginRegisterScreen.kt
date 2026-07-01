@@ -2,6 +2,7 @@
 
     import android.util.Patterns
     import android.widget.Toast
+    import androidx.compose.foundation.Image
     import androidx.compose.foundation.background
     import androidx.compose.foundation.border
     import androidx.compose.foundation.clickable
@@ -26,6 +27,8 @@
     import androidx.compose.ui.text.input.VisualTransformation
     import androidx.compose.ui.unit.dp
     import androidx.compose.ui.unit.sp
+    import androidx.compose.ui.layout.ContentScale
+    import androidx.compose.ui.res.painterResource
     import kotlinx.coroutines.launch
 
     @Composable
@@ -115,11 +118,17 @@
                     modifier = Modifier
                         .size(72.dp)
                         .clip(RoundedCornerShape(20.dp))
-                        .background(BanDITColors.CyanDim)
-                        .border(1.dp, BanDITColors.CyanPrimary.copy(alpha = 0.5f), RoundedCornerShape(20.dp)),
+                        .background(BanDITColors.WhiteCyan)
+                        .border(1.dp, BanDITColors.CyanPrimary.copy(alpha = 1f), RoundedCornerShape(20.dp)),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text("B", fontSize = 32.sp, fontWeight = FontWeight.Black, color = BanDITColors.CyanPrimary)
+                    Image(
+                        painter = painterResource(id = R.drawable.banditlogo),
+                        contentDescription = "Logo BanDIT",
+                        modifier = Modifier
+                            .size(60.dp),
+                        contentScale = ContentScale.Fit
+                    )
                 }
 
                 Spacer(Modifier.height(16.dp))

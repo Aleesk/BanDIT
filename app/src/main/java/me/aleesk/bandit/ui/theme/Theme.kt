@@ -32,6 +32,11 @@ object BanDITColors {
     val SuccessGreen    = Color(0xFF10B981)
     val SuccessGreenDim = Color(0xFF0D2D22)
     val WarnOrange      = Color(0xFFF59E0B)
+
+    val WhiteDefault = Color(0xFFF8FAFC)
+
+    val WhiteCyan    = Color(0xFFF1F5F9)
+
 }
 
 // ─── Dark Color Scheme ────────────────────────────────────────────────────────
