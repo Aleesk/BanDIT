@@ -63,6 +63,9 @@ class BleService : Service() {
     var onBpmUpdate: ((Int) -> Unit)? = null
     var onAlertReceived: ((Boolean) -> Unit)? = null
 
+    val isConnected: Boolean
+        get() = bleManager?.isConnected ?: false
+
     // ── Ciclo de vida ─────────────────────────────────────
     override fun onCreate() {
         super.onCreate()

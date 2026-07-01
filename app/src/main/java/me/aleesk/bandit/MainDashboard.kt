@@ -42,6 +42,10 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
 import com.google.firebase.messaging.FirebaseMessaging
+import com.google.android.gms.tasks.Task
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -257,6 +261,15 @@ fun PatientHomeScreen(
             override fun onServiceConnected(name: ComponentName, binder: IBinder) {
                 val svc = (binder as BleService.LocalBinder).service
                 boundService = svc
+
+                // Sincroniza el estado actual inmediatamente al bindear.
+                // Si el servicio ya estaba conectado de antes (ej. la app se
+                // reabrió mientras el foreground service seguía vivo), este
+                // es el único lugar donde nos enteramos — onConnectionChange
+                // solo dispara en transiciones futuras, no retroactivamente.
+                bleConectado = svc.isConnected
+                onBleConnectionChange(svc.isConnected)
+
                 svc.onConnectionChange = { connected ->
                     bleConectado = connected
                     onBleConnectionChange(connected)
@@ -486,6 +499,11 @@ fun PatientHomeScreen(
 }
 
 /** Crea la alerta en Firestore, dispara el backend y devuelve el ID de la alerta creada (o null si falló). */
+private suspend fun <T> Task<T>.awaitResult(): T = suspendCancellableCoroutine { cont ->
+    addOnSuccessListener { value -> cont.resume(value) }
+    addOnFailureListener { exception -> cont.resumeWithException(exception) }
+}
+
 private suspend fun sendCrisisAlert(
     db: FirebaseFirestore,
     userId: String,
@@ -498,12 +516,25 @@ private suspend fun sendCrisisAlert(
     if (locationData != null) {
         updateFields["location"] = locationData
     }
-    try {
-        db.collection("users").document(userId).update(updateFields)
+
+    return try {
+        db.collection("users").document(userId).update(updateFields).awaitResult()
+
+        val alertRef = db.collection("users").document(userId)
+            .collection("alerts").document()
+
+        val alertData = mutableMapOf<String, Any>("triggeredAt" to Timestamp.now())
+        if (locationData != null) alertData["location"] = locationData
+
+        alertRef.set(alertData).awaitResult()
+
+        sendAlertToBackend(userId)
+
+        alertRef.id
     } catch (e: Exception) {
-        android.util.Log.e("BanDIT", "Error actualizando Firestore: ${e.message}")
+        android.util.Log.e("BanDIT", "Error creando alerta de crisis: ${e.message}", e)
+        null
     }
-    return sendAlertToBackend(userId)
 }
 
 /** Marca una alerta puntual (por ID) como resuelta, dejando registro de quién y cuándo. */
